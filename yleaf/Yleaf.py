@@ -358,6 +358,7 @@ def main_vcf(
 
 
 def main():
+    start_time = time.time()
     print("Erasmus MC Department of Genetic Identification\nYleaf: software tool for human Y-chromosomal "
           f"phylogenetic analysis and haplogroup inference v{__version__}")
     logo()
@@ -406,6 +407,14 @@ def main():
     elif args.bamfile:
         main_bam_cram(args, out_folder, True)
     elif args.cramfile:
+        # Auto-fill CRAM reference from config if not provided
+        if args.cram_reference is None:
+            ref_path = get_reference_path(args.reference_genome, is_full=True)
+            if ref_path and ref_path.exists() and ref_path.stat().st_size > 100:
+                LOG.info(f"Auto-detected CRAM reference: {ref_path}")
+                args.cram_reference = ref_path
+            else:
+                raise ValueError("Please specify a reference genome for the CRAM file (-cr) or configure it in config.txt.")
         main_bam_cram(args, out_folder, False)
     elif args.vcffile:
         main_vcf(args, out_folder)
@@ -432,7 +441,8 @@ def main():
         elif args.fastq: log_input = args.fastq # might be a list
         elif args.vcffile: log_input = args.vcffile
         
-        summary_logger.log_run(out_folder, log_input, args.reference_genome)
+        duration = time.time() - start_time
+        summary_logger.log_run(out_folder, log_input, args.reference_genome, duration=duration)
     except Exception as e:
         LOG.error(f"Failed to update summary log: {e}")
 

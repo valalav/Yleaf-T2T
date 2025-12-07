@@ -19,7 +19,7 @@ def get_summary_path():
         return Path("Yleaf") / SUMMARY_FILENAME
     return Path(SUMMARY_FILENAME)
 
-def log_run(output_folder, input_file_path, ref_genome):
+def log_run(output_folder, input_file_path, ref_genome, duration=0.0):
     output_path = Path(output_folder)
     hg_file = output_path / "hg_prediction.hg"
     
@@ -61,11 +61,12 @@ def log_run(output_folder, input_file_path, ref_genome):
         "Terminal Marker": marker,
         "QC Score": qc_score,
         "Total Reads": total_reads,
-        "YFull Link": yfull_link
+        "YFull Link": yfull_link,
+        "Duration (s)": round(duration, 2)
     }
 
     fieldnames = ["Date", "Sample Name", "Input File", "Reference", "Haplogroup", 
-                  "Terminal Marker", "QC Score", "Total Reads", "YFull Link"]
+                  "Terminal Marker", "QC Score", "Total Reads", "YFull Link", "Duration (s)"]
 
     csv_path = get_summary_path()
     file_exists = csv_path.exists()

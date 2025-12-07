@@ -33,16 +33,7 @@ def run_yleaf(bam_path, output_base_dir):
     Runs Yleaf on the BAM file.
     """
     bam_path = Path(bam_path)
-    # Create output directory name based on file stem
     output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
-    
-    # Ensure output dir exists (Yleaf creates it, but we need it for log file if we want to put it there immediately, 
-    # but Yleaf might delete it if force is used. So let's write log AFTER or store in variable)
-    # Better: Write to a separate log file in the base dir or inside the output dir after creation.
-    # Actually, Yleaf creates 'run.log' internally, but that only captures python logging.
-    # To capture terminal output (stdout/stderr), we need to redirect.
-    
-    # Let's create the dir first
     output_dir.mkdir(parents=True, exist_ok=True)
     
     log_file_path = output_dir / "full_terminal_output.log"
@@ -54,64 +45,126 @@ def run_yleaf(bam_path, output_base_dir):
         "Yleaf",
         "-bam", str(bam_path),
         "-o", str(output_dir)
-        # -rg is auto-detected
-        # -force is default True
     ]
     
-    try:
-        # Open log file
+    def execute_process():
         with open(log_file_path, "w") as log_file:
-            # Start process, piping stdout and stderr
             process = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, # Merge stderr into stdout
-                text=True, # Decode bytes to string
-                bufsize=1 # Line buffered
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
             )
-            
-            # Read line by line
+            output_lines = []
             for line in process.stdout:
-                # Print to console
                 print(line, end='')
-                # Write to file
                 log_file.write(line)
-                
-            # Wait for finish
+                output_lines.append(line)
+            
             return_code = process.wait()
-            
             if return_code != 0:
-                raise subprocess.CalledProcessError(return_code, cmd)
-            
+                raise subprocess.CalledProcessError(return_code, cmd, output="".join(output_lines))
+
+    try:
+        execute_process()
         print(f"Successfully processed {bam_path.name}\n")
+        
     except subprocess.CalledProcessError as e:
-        print(f"Error processing {bam_path.name}: {e}")
+        # Check if error is index related
+        err_text = e.output.lower() if e.output else ""
+        if "index" in err_text or "bgzf" in err_text or "older than" in err_text:
+            print(f"\n[Auto-Heal] Detected potential index issue for {bam_path.name}. Re-indexing...")
+            
+            # Try to remove old index
+            bai = bam_path.with_suffix('.bam.bai')
+            bai2 = bam_path.with_suffix('.bai')
+            crai = bam_path.with_suffix('.cram.crai')
+            crai2 = bam_path.with_suffix('.crai')
+            
+            for idx in [bai, bai2, crai, crai2]:
+                if idx.exists():
+                    try:
+                        idx.unlink()
+                        print(f"Removed old index: {idx}")
+                    except OSError:
+                        print(f"Could not remove index: {idx} (permission?)")
+
+            # Re-create index using our helper
+            if check_create_index(bam_path):
+                print(f"[Auto-Heal] Re-indexing successful. Retrying Yleaf...")
+                try:
+                    execute_process()
+                    print(f"Successfully processed {bam_path.name} (after fix)\n")
+                    return # Success
+                except subprocess.CalledProcessError:
+                    print(f"[Auto-Heal] Retry failed. File might be truly corrupted.")
+            else:
+                print(f"[Auto-Heal] Re-indexing failed.")
+
+        print(f"Error processing {bam_path.name}: Process exited with code {e.returncode}")
         print(f"Check log for details: {log_file_path}\n")
+
+def check_bam_integrity(bam_path):
+    """
+    Uses samtools quickcheck to verify BAM integrity.
+    """
+    print(f"Checking integrity of {bam_path.name}...")
+    try:
+        subprocess.check_call(["samtools", "quickcheck", str(bam_path)])
+        return True
+    except subprocess.CalledProcessError:
+        print(f"ERROR: File is corrupted: {bam_path}")
+        return False
+    except FileNotFoundError:
+        # samtools not found, assume ok
+        return True
 
 def main():
     parser = argparse.ArgumentParser(description="Batch process BAM files with Yleaf.")
-    parser.add_argument("file_list", help="Text file containing list of BAM file paths (one per line)")
+    parser.add_argument("input_source", help="Text file with list of paths OR directory to scan (if -d is used)")
+    parser.add_argument("-d", "--directory-mode", action="store_true", help="Treat input_source as a directory and scan recursively for .bam/.cram")
     parser.add_argument("-o", "--output_dir", default=".", help="Base directory for output folders")
     
     args = parser.parse_args()
     
-    file_list_path = Path(args.file_list)
-    if not file_list_path.exists():
-        print(f"File list not found: {file_list_path}")
-        sys.exit(1)
-        
-    with open(file_list_path, 'r') as f:
-        lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-        
-    print(f"Found {len(lines)} files to process.")
+    files_to_process = []
     
-    for file_path_str in lines:
-        file_path = Path(file_path_str)
+    if args.directory_mode:
+        search_dir = Path(args.input_source)
+        if not search_dir.exists():
+            print(f"Directory not found: {search_dir}")
+            sys.exit(1)
+            
+        print(f"Scanning {search_dir} for BAM/CRAM files...")
+        # Recursive glob
+        extensions = ['*.bam', '*.cram']
+        for ext in extensions:
+            files_to_process.extend(list(search_dir.rglob(ext)))
+            
+    else:
+        file_list_path = Path(args.input_source)
+        if not file_list_path.exists():
+            print(f"File list not found: {file_list_path}")
+            sys.exit(1)
+            
+        with open(file_list_path, 'r') as f:
+            lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+            files_to_process = [Path(line) for line in lines]
+        
+    print(f"Found {len(files_to_process)} files to process.")
+    
+    for file_path in files_to_process:
         
         if not file_path.exists():
             print(f"File not found, skipping: {file_path}")
             continue
             
+        # 0. Integrity Check
+        if not check_bam_integrity(file_path):
+            print(f"Skipping corrupted file: {file_path.name}\n")
+            continue
+
         # 1. Check/Create Index
         if not check_create_index(file_path):
             print(f"Skipping {file_path.name} due to indexing failure.")
