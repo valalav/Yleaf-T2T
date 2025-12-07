@@ -1,4 +1,6 @@
-full hg19 genome fasta location =
-hg19 chromosome Y fasta location =
-full hg38 genome fasta location =
-hg38 chromosome Y fasta location =
+full hg19 genome fasta location = /home/valalav/wgs/WGSExtractv4/reference/genomes/hs37d5.fa
+hg19 chromosome Y fasta location = /home/valalav/wgs/WGSExtractv4/reference/genomes/hs37d5.fa
+full hg38 genome fasta location = /home/valalav/wgs/WGSExtractv4/reference/genomes/hg38.fa
+hg38 chromosome Y fasta location = /home/valalav/wgs/WGSExtractv4/reference/genomes/hg38.fa
+full t2t genome fasta location = /home/valalav/wgs/WGSExtractv4/reference/genomes/chm13v2.0.fa
+t2t chromosome Y fasta location = /home/valalav/wgs/WGSExtractv4/reference/genomes/chm13v2.0.fa

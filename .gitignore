@@ -13,3 +13,11 @@ yleaf/data/hg38/chrY.fa
 yleaf/data/hg19/chrY.fa
 male_pedigree_toolbox.egg-info/
 /venv/
+.venv/
+__pycache__/
+*.egg-info/
+summary_table.csv
+.venv/
+.venv/
+.venv/
+.venv/

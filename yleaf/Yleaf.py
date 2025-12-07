@@ -31,7 +31,7 @@ import datetime
 
 from yleaf import __version__
 from yleaf.tree import Tree
-from yleaf import yleaf_constants, download_reference
+from yleaf import yleaf_constants, download_reference, html_report, summary_logger
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -369,6 +369,21 @@ def main():
 
     LOG.info(f"Running Yleaf with command: {' '.join(sys.argv)}")
 
+    # Automatic Reference Genome Detection
+    if args.reference_genome is None:
+        LOG.info("No reference genome specified. Attempting to detect from input file header...")
+        input_file = None
+        if args.bamfile: input_file = args.bamfile
+        elif args.cramfile: input_file = args.cramfile
+        # Note: Detection from VCF/FastQ is harder/impossible efficiently without reading big files, skipping for now.
+        
+        if input_file:
+            args.reference_genome = detect_reference_genome(input_file)
+            LOG.info(f"Detected reference genome: {args.reference_genome}")
+        else:
+            LOG.error("Reference genome must be specified for VCF/FastQ inputs or if detection fails.")
+            sys.exit(1)
+
     # make sure the reference genome is present before doing something else, if not present it is downloaded
     check_reference(args.reference_genome)
 
@@ -387,6 +402,25 @@ def main():
     predict_haplogroup(out_folder, hg_out, args.use_old, args.prediction_quality, args.threads)
     if args.draw_haplogroups:
         draw_haplogroups(hg_out, args.collapsed_draw_mode)
+
+    # Generate HTML Report
+    try:
+        html_report.generate_html(out_folder)
+    except Exception as e:
+        LOG.error(f"Failed to generate HTML report: {e}")
+
+    # Update Summary Log
+    try:
+        # Determine input file path for logging
+        log_input = "Unknown"
+        if args.bamfile: log_input = args.bamfile
+        elif args.cramfile: log_input = args.cramfile
+        elif args.fastq: log_input = args.fastq # might be a list
+        elif args.vcffile: log_input = args.vcffile
+        
+        summary_logger.log_run(out_folder, log_input, args.reference_genome)
+    except Exception as e:
+        LOG.error(f"Failed to update summary log: {e}")
 
     LOG.info("Done!")
 
@@ -422,14 +456,16 @@ def get_arguments() -> argparse.Namespace:
                         help="input VCF file (.vcf.gz)", metavar="PATH", type=check_file)
     parser.add_argument("-ra", "--reanalyze", required=False,
                         help="reanalyze (skip filtering and splitting) the vcf file", action="store_true")
-    parser.add_argument("-force", "--force", action="store_true",
-                        help="Delete files without asking")
+    parser.add_argument("-force", "--force", action="store_true", default=True,
+                        help="Delete files without asking (Default: True)")
+    parser.add_argument("-no-force", "--interactive", dest="force", action="store_false",
+                        help="Ask before deleting files")
     parser.add_argument("-rg", "--reference_genome",
                         help="The reference genome build to be used. If no reference is available "
                              "they will be downloaded. If you added references in your config.txt file these"
                              " will be used instead as reference or the location will be used to download the "
                              "reference if those files are missing or empty.",
-                        choices=[yleaf_constants.HG19, yleaf_constants.HG38], required=True)
+                        choices=[yleaf_constants.HG19, yleaf_constants.HG38, yleaf_constants.T2T], required=False)
     parser.add_argument("-o", "--output", required=True,
                         help="Folder name containing outputs", metavar="STRING")
     parser.add_argument("-r", "--reads_treshold",
@@ -656,6 +692,49 @@ def get_files_with_extension(
         return [path]
 
 
+def detect_reference_genome(input_path: Path) -> str:
+    """
+    Detects reference genome (hg19, hg38, t2t) by reading BAM/CRAM header.
+    Checks chromosome lengths.
+    """
+    cmd = f"samtools view -H {input_path} | grep @SQ"
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    stdout, stderr = process.communicate()
+    
+    if process.returncode != 0:
+        LOG.warning(f"Failed to read header for auto-detection: {stderr.decode('utf-8')}")
+        raise ValueError("Could not read input file header.")
+
+    header_lines = stdout.decode('utf-8').splitlines()
+    
+    # Known lengths of chr1
+    LEN_HG19 = 249250621
+    LEN_HG38 = 248956422
+    LEN_T2T = 248387328
+    
+    for line in header_lines:
+        if "SN:chr1" in line or "SN:1" in line: # Check chr1
+            parts = line.split()
+            for part in parts:
+                if part.startswith("LN:"):
+                    length = int(part.split(":")[1])
+                    if length == LEN_T2T:
+                        return yleaf_constants.T2T
+                    elif length == LEN_HG38:
+                        return yleaf_constants.HG38
+                    elif length == LEN_HG19:
+                        return yleaf_constants.HG19
+    
+    # Fallback: check chrY if chr1 is missing (e.g. targeted bam)
+    # T2T chrY: ? (Wait, user file only has chrY?)
+    # If user file is ONLY chrY, we might not see chr1 in header IF it was subsetted without keeping full header.
+    # But usually 'samtools view -H' keeps all @SQ lines even if reads are subsetted. 
+    # Let's check user's previous output for 'samtools view -H'. 
+    # It showed: @SQ SN:chr1 LN:248387328. So chr1 IS present in header!
+    
+    raise ValueError("Could not identify reference genome from header. Please specify -rg manually.")
+
+
 def check_reference(
         requested_version: str,
 ):
@@ -674,13 +753,17 @@ def get_reference_path(
     if is_full:
         if requested_version == yleaf_constants.HG19:
             reference_file = yleaf_constants.HG19_FULL_GENOME
-        else:
+        elif requested_version == yleaf_constants.HG38:
             reference_file = yleaf_constants.HG38_FULL_GENOME
+        else:
+            reference_file = yleaf_constants.T2T_FULL_GENOME
     else:
         if requested_version == yleaf_constants.HG19:
             reference_file = yleaf_constants.HG19_Y_CHROMOSOME
-        else:
+        elif requested_version == yleaf_constants.HG38:
             reference_file = yleaf_constants.HG38_Y_CHROMOSOME
+        else:
+            reference_file = yleaf_constants.T2T_Y_CHROMOSOME
     return reference_file
 
 
@@ -710,7 +793,7 @@ def samtools(
     bed = output_folder / "temp_position_bed.bed"
     write_bed_file(bed, position_file, header)
 
-    execute_mpileup(bed, path_file, pileupfile, args.quality_thresh, reference)
+    execute_mpileup(bed, path_file, pileupfile, args.quality_thresh, reference, region=header)
 
     general_info_list = ["Total of mapped reads: " + str(mapped), "Total of unmapped reads: " + str(unmapped)]
 
@@ -811,9 +894,15 @@ def execute_mpileup(
         bam_file: Path,
         pileupfile: Path,
         quality_thresh: float,
-        reference: Union[Path, None]
+        reference: Union[Path, None],
+        region: str = None
 ):
     cmd = "samtools mpileup"
+    
+    # Restrict to specific region (Chromosome) for speed!
+    if region:
+        cmd += f" -r {region}"
+        
     if bed is not None:
         cmd += f" -l {str(bed)}"
 
