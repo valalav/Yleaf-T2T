@@ -4,6 +4,10 @@ from liftover import get_lifter
 def convert_positions(input_path, output_path, chain_from, chain_to):
     print(f"Converting {input_path} from {chain_from} to {chain_to}...")
     
+    if not os.path.exists(input_path):
+        print(f"Error: Input file not found: {input_path}")
+        return
+
     # Initialize lifter (downloads chain file automatically if needed)
     converter = get_lifter(chain_from, chain_to)
     
@@ -17,12 +21,9 @@ def convert_positions(input_path, output_path, chain_from, chain_to):
                 outfile.write(line) # Header or bad line
                 continue
                 
-            chrom = parts[0] # usually 'chry' or 'chrY'
-            # Ensure chrom format matches what liftover expects (usually 'chrY')
-            if chrom.lower() == 'chry':
-                liftover_chrom = 'chrY'
-            else:
-                liftover_chrom = chrom
+            chrom = parts[0] # usually 'chry'
+            # LiftOver expects 'chrY' usually
+            liftover_chrom = 'chrY'
                 
             try:
                 pos = int(parts[3])
@@ -36,36 +37,30 @@ def convert_positions(input_path, output_path, chain_from, chain_to):
                     outfile.write('\t'.join(parts) + '\n')
                     converted_count += 1
                 else:
-                    # Could not map position (deleted in new assembly or complex region)
-                    # print(f"Skipping {parts[1]}: {pos} not mapped")
+                    # Could not map position
                     skipped_count += 1
             except ValueError:
-                outfile.write(line) # Probably header
+                outfile.write(line) 
             except Exception as e:
-                print(f"Error on line: {line.strip()} -> {e}")
+                # print(f"Error on line: {line.strip()} -> {e}")
                 skipped_count += 1
 
-    print(f"Finished {input_path}. Converted: {converted_count}, Skipped/Unmapped: {skipped_count}")
+    print(f"Finished. Converted: {converted_count}, Skipped/Unmapped: {skipped_count}")
 
 # Paths
 base_dir = "Yleaf/yleaf/data"
 hg38_dir = os.path.join(base_dir, "hg38")
 t2t_dir = os.path.join(base_dir, "t2t")
 
-files_to_convert = [
-    "new_positions.txt",
-    "new_positions_ancient.txt", 
-    "old_positions.txt",
-    "old_positions_ancient.txt"
-]
+# Ensure output dir exists
+os.makedirs(t2t_dir, exist_ok=True)
 
-# Run conversion for all files
+# We only need to convert new_positions.txt as that's what the updater created
+files_to_convert = ["new_positions.txt"]
+
 for filename in files_to_convert:
     in_file = os.path.join(hg38_dir, filename)
     out_file = os.path.join(t2t_dir, filename)
     
-    if os.path.exists(in_file):
-        # hg38 to hs1 (T2T-CHM13)
-        convert_positions(in_file, out_file, 'hg38', 'hs1')
-    else:
-        print(f"Warning: {in_file} not found.")
+    # hg38 to hs1 (T2T-CHM13)
+    convert_positions(in_file, out_file, 'hg38', 'hs1')
