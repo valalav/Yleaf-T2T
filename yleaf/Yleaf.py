@@ -833,7 +833,7 @@ def chromosome_table(
     f = open(tmp_output, "w")
     cmd = f"samtools idxstats {path_file}"
     call_command(cmd, stdout_location=f)
-    df_chromosome = pd.read_table(tmp_output, header=None)
+    df_chromosome = pd.read_csv(tmp_output, sep="\t", header=None)
 
     total_reads = sum(df_chromosome[2])
 
@@ -945,14 +945,9 @@ def extract_haplogroups(
     markerfile = markerfile.drop_duplicates(subset='pos', keep='first', inplace=False)
 
     # packagemanagement is the best
-    try:
-        pileupfile = pd.read_csv(path_pileupfile, header=None, sep="\t",
-                                 dtype={0: str, 1: int, 2: str, 3: int, 4: str, 5: str},
-                                 on_bad_lines='skip')
-    except TypeError:
-        pileupfile = pd.read_csv(path_pileupfile, header=None, sep="\t",
-                                 dtype={0: str, 1: int, 2: str, 3: int, 4: str, 5: str},
-                                 error_bad_lines=False)
+    pileupfile = pd.read_csv(path_pileupfile, header=None, sep="\t",
+                             dtype={0: str, 1: int, 2: str, 3: int, 4: str, 5: str},
+                             on_bad_lines='skip')
 
     pileupfile.columns = ['chr', 'pos', 'refbase', 'reads', 'align', 'quality']
 
@@ -996,7 +991,13 @@ def extract_haplogroups(
     called_base = df_freq_table.columns[list_col_indices]  # noqa
     total_count_bases = np.sum(df_freq_table.values, axis=1)
     max_count_bases = np.max(df_freq_table, axis=1)
-    called_perc = round((max_count_bases / total_count_bases) * 100, 1)
+    
+    # Calculate percentage, handling division by zero if total_count_bases is 0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        called_perc = (max_count_bases / total_count_bases) * 100
+        called_perc = called_perc.fillna(0) # Replace NaN with 0
+        called_perc = called_perc.replace([np.inf, -np.inf], 0) # Replace Inf
+        called_perc = called_perc.round(1)
 
     bool_anc = np.equal(np.array(called_base), df["anc"].values)
     bool_der = np.equal(np.array(called_base), df["der"].values)
