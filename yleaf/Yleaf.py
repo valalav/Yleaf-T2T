@@ -384,6 +384,20 @@ def main():
             LOG.error("Reference genome must be specified for VCF/FastQ inputs or if detection fails.")
             sys.exit(1)
 
+    # Manual Reference Override
+    if args.ref_fasta:
+        LOG.info(f"Overriding reference FASTA with: {args.ref_fasta}")
+        # Update constants dynamically
+        if args.reference_genome == yleaf_constants.HG19:
+            yleaf_constants.HG19_FULL_GENOME = args.ref_fasta
+            yleaf_constants.HG19_Y_CHROMOSOME = args.ref_fasta
+        elif args.reference_genome == yleaf_constants.HG38:
+            yleaf_constants.HG38_FULL_GENOME = args.ref_fasta
+            yleaf_constants.HG38_Y_CHROMOSOME = args.ref_fasta
+        elif args.reference_genome == yleaf_constants.T2T:
+            yleaf_constants.T2T_FULL_GENOME = args.ref_fasta
+            yleaf_constants.T2T_Y_CHROMOSOME = args.ref_fasta
+
     # make sure the reference genome is present before doing something else, if not present it is downloaded
     check_reference(args.reference_genome)
 
@@ -466,6 +480,8 @@ def get_arguments() -> argparse.Namespace:
                              " will be used instead as reference or the location will be used to download the "
                              "reference if those files are missing or empty.",
                         choices=[yleaf_constants.HG19, yleaf_constants.HG38, yleaf_constants.T2T], required=False)
+    parser.add_argument("-rf", "--ref-fasta", required=False, metavar="PATH", type=check_file,
+                        help="Manually specify path to the Reference Genome FASTA file (overrides config)")
     parser.add_argument("-o", "--output", required=True,
                         help="Folder name containing outputs", metavar="STRING")
     parser.add_argument("-r", "--reads_treshold",
