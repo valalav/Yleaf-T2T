@@ -53,8 +53,9 @@ def generate_html(output_folder):
     def make_link(hg):
         if pd.isna(hg) or hg == "-" or str(hg).strip() == "": return hg
         clean_hg = str(hg).strip()
-        # Extract SNP/Haplogroup for link (take last part after dash)
-        link_target = clean_hg.split("-")[-1].replace("*", "")
+        # Use full haplogroup name for link (e.g. J-Y178683 instead of just Y178683)
+        # Remove '*' though
+        link_target = clean_hg.replace("*", "")
         return f'<a href="https://www.yfull.com/tree/{link_target}/" target="_blank" class="text-decoration-none">{clean_hg}</a>'
 
     def format_full_haplogroup(hg_str):
@@ -76,7 +77,7 @@ def generate_html(output_folder):
 
         # Format Main Branch
         main_clean = main_part.strip()
-        main_target = main_clean.split("-")[-1].replace("*", "")
+        main_target = main_clean.replace("*", "")
         main_html = f'<a href="https://www.yfull.com/tree/{main_target}/" target="_blank" class="fs-4 fw-bold text-decoration-none">{main_clean}</a>'
 
         # Format Excluded Branches
@@ -89,7 +90,7 @@ def generate_html(output_folder):
             """
             for branch in excluded_branches:
                 b_clean = branch.strip()
-                b_target = b_clean.split("-")[-1].replace("*", "")
+                b_target = b_clean.replace("*", "")
                 excl_html += f'<a href="https://www.yfull.com/tree/{b_target}/" target="_blank" class="badge bg-light text-secondary border text-decoration-none fw-normal" title="Open {b_clean} on YFull">{b_clean}</a>'
             excl_html += "</div></div>"
         

@@ -47,7 +47,8 @@ def log_run(output_folder, input_file_path, ref_genome):
     hg_clean = str(hg_raw).split("(x")[0].replace("*", "").strip() # remove exclusions and stars
     
     # Generate Link
-    link_target = hg_clean.split("-")[-1]
+    # Use full haplogroup name (e.g. I-Z2336) as YFull supports it and it's safer than just SNP
+    link_target = hg_clean 
     yfull_link = f"https://www.yfull.com/tree/{link_target}/" if link_target else ""
 
     # Prepare Row
