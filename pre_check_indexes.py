@@ -42,8 +42,8 @@ def process_file(bam_path_str):
                 needs_indexing = True
                 reason = "Outdated"
                 # Remove old index to be safe
-                try: existing_idx.unlink() 
-                except: pass
+                try: existing_idx.unlink()
+                except (OSError, PermissionError): pass
         except FileNotFoundError:
             needs_indexing = True
             reason = "Stat failed"

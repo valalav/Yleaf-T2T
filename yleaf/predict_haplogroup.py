@@ -25,7 +25,8 @@ BACKBONE_GROUPS: Set = set()
 MAIN_HAPLO_GROUPS: Set = set()
 QC1_SCORE_CACHE: Dict[str, float] = {}
 
-DEFAULT_MIN_SCORE = 0.95
+# Use constant from yleaf_constants for consistency
+DEFAULT_MIN_SCORE = yleaf_constants.DEFAULT_MIN_SCORE
 
 LOG = logging.getLogger("yleaf_logger")
 
@@ -69,12 +70,16 @@ class HgMarkersLinker:
         return len(self._ancestral_markers)
 
     def get_state(self) -> str:
-        """at least a fraction of 0.6 need to either derived or ancestral, otherwise the state can not be accurately
-        determined and will be returned as undefined"""
+        """Determine the state based on the fraction of derived/ancestral markers.
 
-        if self.nr_derived / self.nr_total >= 0.6:
+        At least STATE_DETERMINATION_THRESHOLD (default 0.6) fraction needs to be either
+        derived or ancestral, otherwise the state cannot be accurately determined
+        and will be returned as undefined.
+        """
+        threshold = yleaf_constants.STATE_DETERMINATION_THRESHOLD
+        if self.nr_derived / self.nr_total >= threshold:
             return self.DERIVED
-        if self.nr_ancestral / self.nr_total >= 0.6:
+        if self.nr_ancestral / self.nr_total >= threshold:
             return self.ANCESTRAL
         return self.UNDEFINED
 
@@ -83,6 +88,31 @@ def main_predict_haplogroup(
     namespace: argparse.Namespace,
     folder: Path,
 ):
+    """
+    Predict Y-chromosome haplogroup for a single sample.
+
+    This function processes the .out file from a Yleaf run and uses the
+    YFull tree to determine the most likely Y-chromosome haplogroup.
+
+    Args:
+        namespace: Command-line arguments namespace containing:
+            - minimum_score: Minimum QC score for prediction acceptance
+        folder: Path to sample output folder containing the .out file.
+
+    Returns:
+        List containing:
+        - haplotype_dict: Dict[str, HgMarkersLinker] mapping haplogroups to markers
+        - best_haplotype_score: Tuple (haplogroup_name, qc_score) or None
+        - folder: Original folder path for reference
+
+        Returns [None, None, None] if:
+        - Folder is "filtered_vcf_files" (internal folder)
+        - The .out file is not found
+
+    Note:
+        Resets the global QC1_SCORE_CACHE before processing to ensure
+        independent results per sample.
+    """
     # make sure to reset this for each sample
     global QC1_SCORE_CACHE
     QC1_SCORE_CACHE = {}

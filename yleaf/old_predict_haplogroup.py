@@ -18,11 +18,13 @@ import operator
 import os
 import argparse
 from argparse import ArgumentParser
+from typing import List, Dict, Tuple, Any, Union
 
 from yleaf import yleaf_constants
 
 
-def get_arguments():
+def get_arguments() -> argparse.Namespace:
+    """Parse and return command-line arguments."""
     parser = ArgumentParser(description="Erasmus MC: Genetic Identification\n Y-Haplogroup Prediction")
 
     parser.add_argument("-input", "--Input",
@@ -37,7 +39,7 @@ def get_arguments():
     return args
 
 
-def file_exists(x):
+def file_exists(x: str) -> str:
     """
     'Type' for argparse - checks that file exists but does not open.
     """
@@ -46,8 +48,9 @@ def file_exists(x):
     return x
 
 
-def check_if_folder(path, ext):
-    list_files = []
+def check_if_folder(path: str, ext: str) -> List[str]:
+    """Check if path is a folder and return list of files with given extension."""
+    list_files: List[str] = []
     if os.path.isdir(path):
         dirpath = os.walk(path)
         for dirpath, dirnames, filenames in dirpath:
@@ -59,7 +62,7 @@ def check_if_folder(path, ext):
         return [path]
 
 
-def get_hg_root(hg):
+def get_hg_root(hg: np.ndarray) -> str:
     """
     Choose the haplogroup based on the highest count and branch depth (E.x. J2a21 = J)
     """
@@ -77,7 +80,7 @@ def get_hg_root(hg):
                 hg_dict[c[0]] += collections_hg[c]
         init_hg = max(iter(hg_dict.items()), key=operator.itemgetter(1))[0]
         return init_hg
-    except:
+    except (KeyError, ValueError, StopIteration):
         return init_hg
 
 
@@ -87,7 +90,7 @@ def get_intermediate_branch(init_hg, path_hg_prediction_tables):
     try:
         df_intermediate = pd.read_csv(hg_intermediate_file, header=None, sep="\t", engine='python')
         return df_intermediate
-    except:
+    except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError):
         return pd.DataFrame()
 
 

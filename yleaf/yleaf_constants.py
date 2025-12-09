@@ -230,6 +230,27 @@ graphviz_path =
 
 
 # =============================================================================
+# ALGORITHM CONSTANTS AND THRESHOLDS
+# =============================================================================
+
+# Read filtering thresholds (used in Yleaf.py)
+DEFAULT_READ_THRESHOLD: int = 10  # Minimum number of reads for each base
+DEFAULT_QUALITY_THRESHOLD: int = 20  # Minimum quality for each read [10-40]
+DEFAULT_MAJORITY_THRESHOLD: int = 90  # Base majority percentage [50-99]
+
+# Haplogroup prediction thresholds (used in predict_haplogroup.py)
+DEFAULT_MIN_SCORE: float = 0.95  # Minimum QC score for prediction inclusion
+STATE_DETERMINATION_THRESHOLD: float = 0.6  # Fraction needed for state determination
+
+# Batch processing timeouts (used in batch_process.py)
+INDEX_TIMEOUT: int = 600  # Timeout for BAM indexing (10 minutes)
+BATCH_PROCESS_TIMEOUT: int = 900  # Safety timeout for batch processing (15 minutes)
+
+# Tool version check timeout
+TOOL_VERSION_TIMEOUT: int = 10  # Timeout for checking tool versions
+
+
+# =============================================================================
 # INITIALIZATION
 # =============================================================================
 

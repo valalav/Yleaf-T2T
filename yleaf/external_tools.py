@@ -549,3 +549,44 @@ def get_tool_versions() -> dict:
             versions[tool_name] = "not found"
 
     return versions
+
+
+# =============================================================================
+# MINIMAP2 WRAPPERS
+# =============================================================================
+
+def minimap2_align(
+    reference: Path,
+    fastq_files: List[Path],
+    output_sam: Path,
+    threads: int = 1,
+    preset: str = "sr"
+) -> None:
+    """
+    Run minimap2 alignment.
+    Replaces: minimap2 -ax sr -k14 -w7 -t threads reference fastq1 [fastq2] > output.sam
+
+    Args:
+        reference: Path to reference FASTA
+        fastq_files: List of FASTQ files (1 for single-end, 2 for paired-end)
+        output_sam: Path to output SAM file
+        threads: Number of threads
+        preset: Minimap2 preset (default: 'sr' for short reads)
+    """
+    tool = find_tool("minimap2")
+    if not tool:
+        raise SystemExit("minimap2 not found")
+
+    args = [
+        str(tool),
+        "-ax", preset,
+        "-k14", "-w7",
+        "-t", str(threads),
+        str(reference)
+    ]
+
+    # Add FASTQ files
+    for fq in fastq_files:
+        args.append(str(fq))
+
+    run_command(args, stdout_file=output_sam)

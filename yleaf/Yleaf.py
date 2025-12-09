@@ -49,6 +49,283 @@ HAPLOGROUP_IMAGE_FILE_NAME: str = "hg_tree_image"
 LOG: logging.Logger = logging.getLogger("yleaf_logger")
 
 
+# =============================================================================
+# Helper functions for reducing code duplication
+# =============================================================================
+
+def _load_marker_file(path_markerfile: Path) -> pd.DataFrame:
+    """
+    Load marker reference file and remove duplicate positions.
+
+    Args:
+        path_markerfile: Path to tab-separated marker file.
+
+    Returns:
+        DataFrame with columns: chr, marker_name, haplogroup, pos, mutation, anc, der
+    """
+    markerfile = pd.read_csv(
+        path_markerfile, header=None, sep="\t",
+        names=["chr", "marker_name", "haplogroup", "pos", "mutation", "anc", "der"],
+        dtype={
+            "chr": str, "marker_name": str, "haplogroup": str,
+            "pos": int, "mutation": str, "anc": str, "der": str
+        }
+    )
+    return markerfile.drop_duplicates(subset='pos', keep='first', inplace=False)
+
+
+def _apply_quality_filters(
+        df: pd.DataFrame,
+        reads_thresh: int,
+        base_majority: float,
+        reads_col: str = 'reads'
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
+    """
+    Apply standard Yleaf quality filters.
+    
+    Returns:
+        df_passed: Markers passing all filters
+        df_filtered: Markers failing filters (concatenated)
+        stats: Dictionary of counts
+    """
+    stats = {}
+    
+    # 1. Zero reads
+    # VCF logic sometimes has 'called_reads', pileup uses 'reads'
+    zero_mask = df[reads_col] == 0
+    df_zero = df[zero_mask].copy()
+    df_zero["Description"] = "Position with zero reads"
+    # Reset fields for zero reads
+    cols_to_na = ["called_perc", "called_base", "state"]
+    for c in cols_to_na:
+        if c in df_zero.columns: df_zero[c] = "NA"
+    
+    stats["zero"] = len(df_zero)
+    df = df[~zero_mask]
+
+    # 2. Discordant (if bool_state exists)
+    if "bool_state" in df.columns:
+        discordant_mask = df["bool_state"] == False
+        df_discordant = df[discordant_mask].copy()
+        if "bool_state" in df_discordant.columns:
+            df_discordant = df_discordant.drop(["bool_state"], axis=1)
+        df_discordant["state"] = "NA"
+        df_discordant["Description"] = "Discordant genotype"
+        stats["discordant"] = len(df_discordant)
+        df = df[~discordant_mask]
+    else:
+        df_discordant = pd.DataFrame()
+        stats["discordant"] = 0
+
+    # 3. Read Threshold
+    low_reads_mask = df[reads_col] < reads_thresh
+    df_low_reads = df[low_reads_mask].copy()
+    df_low_reads["Description"] = "Below read threshold"
+    stats["low_reads"] = len(df_low_reads)
+    df = df[~low_reads_mask]
+
+    # 4. Base Majority
+    low_majority_mask = df["called_perc"] < base_majority
+    df_low_majority = df[low_majority_mask].copy()
+    df_low_majority["Description"] = "Below base majority"
+    stats["low_majority"] = len(df_low_majority)
+    df = df[~low_majority_mask]
+
+    stats["passed"] = len(df)
+    
+    # Combine failed markers
+    df_filtered = pd.concat([df_zero, df_low_reads, df_low_majority, df_discordant], axis=0, sort=True)
+    # Ensure correct columns for fmf
+    fmf_cols = ['chr', 'pos', 'marker_name', 'haplogroup', 'mutation', 'anc', 'der', reads_col,
+                'called_perc', 'called_base', 'state', 'Description']
+    # Select available columns
+    avail_cols = [c for c in fmf_cols if c in df_filtered.columns]
+    df_filtered = df_filtered[avail_cols]
+    if reads_col != 'reads':
+        df_filtered = df_filtered.rename(columns={reads_col: 'reads'})
+        
+    stats["total_filtered"] = len(df_filtered)
+    
+    # Clean up passed df
+    if "bool_state" in df.columns:
+        df = df.drop(["bool_state"], axis=1)
+        
+    return df, df_filtered, stats
+
+
+def _generate_info_statistics(
+        markerfile_len: int,
+        stats: Dict[str, int],
+        reads_thresh: int,
+        base_majority: float
+) -> List[str]:
+    """Generate stats strings for .info file."""
+    info = []
+    info.append(f"Markers with zero reads: {stats['zero']}")
+    info.append(f"Markers below the read threshold {{{reads_thresh}}}: {stats['low_reads']}")
+    info.append(f"Markers below the base majority threshold {{{base_majority}}}: {stats['low_majority']}")
+    info.append(f"Markers with discordant genotype: {stats['discordant']}")
+    info.append(f"Markers without haplogroup information: {stats['total_filtered']}")
+    info.append(f"Markers with haplogroup information: {stats['passed']}")
+    return info
+
+
+def _apply_quality_filters(
+        df: pd.DataFrame,
+        reads_thresh: float,
+        base_majority: float,
+        reads_column: str = "reads",
+        called_reads_column: str = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, int]]:
+    """
+    Apply quality filters to marker dataframe.
+
+    Filters applied in order:
+    1. Zero reads - positions with no coverage
+    2. Discordant genotypes - called base doesn't match anc/der
+    3. Read threshold - coverage below minimum
+    4. Base majority - allele frequency below minimum
+
+    Args:
+        df: DataFrame with marker data including called_base, called_perc, state columns.
+        reads_thresh: Minimum number of reads required.
+        base_majority: Minimum percentage for called allele.
+        reads_column: Name of column containing read counts.
+        called_reads_column: Name of column with called reads (if different from reads_column).
+
+    Returns:
+        Tuple of (df_passed, df_filtered, filter_stats) where filter_stats is a dict
+        with counts for each filter category.
+    """
+    if called_reads_column is None:
+        called_reads_column = reads_column
+
+    filter_stats = {}
+
+    # Zero reads filter
+    index_belowzero = df[df[called_reads_column] == 0].index
+    df_belowzero = df[df.index.isin(index_belowzero)].copy()
+    df_belowzero["called_perc"] = "NA"
+    df_belowzero["called_base"] = "NA"
+    df_belowzero["state"] = "NA"
+    df_belowzero["Description"] = "Position with zero reads"
+    filter_stats["zero_reads"] = len(df_belowzero)
+
+    df = df[~df.index.isin(index_belowzero)]
+
+    # Discordant genotypes filter
+    if "bool_state" in df.columns:
+        bool_list_state = df[df["bool_state"] == False].index
+        df_discordant = df[df.index.isin(bool_list_state)].copy()
+        df_discordant = df_discordant.drop(["bool_state"], axis=1, errors='ignore')
+        df_discordant["state"] = "NA"
+        df_discordant["Description"] = "Discordant genotype"
+        df = df[~df.index.isin(bool_list_state)]
+    else:
+        df_discordant = pd.DataFrame()
+    filter_stats["discordant"] = len(df_discordant)
+
+    # Read threshold filter
+    df_readsthreshold = df[df[called_reads_column] < reads_thresh].copy()
+    df_readsthreshold["Description"] = "Below read threshold"
+    df = df[df[called_reads_column] >= reads_thresh]
+    filter_stats["below_reads"] = len(df_readsthreshold)
+
+    # Base majority filter
+    df_basemajority = df[df["called_perc"] < base_majority].copy()
+    df_basemajority["Description"] = "Below base majority"
+    df = df[df["called_perc"] >= base_majority]
+    filter_stats["below_majority"] = len(df_basemajority)
+
+    # Combine filtered markers
+    df_fmf = pd.concat(
+        [df_belowzero, df_readsthreshold, df_basemajority, df_discordant],
+        axis=0, sort=True
+    )
+
+    filter_stats["total_filtered"] = len(df_fmf)
+    filter_stats["passed"] = len(df)
+
+    return df, df_fmf, filter_stats
+
+
+def _generate_info_statistics(
+        markerfile_len: int,
+        filter_stats: Dict[str, int],
+        reads_thresh: float,
+        base_majority: float,
+        is_vcf: bool = False
+) -> List[str]:
+    """
+    Generate info statistics list from filter results.
+
+    Args:
+        markerfile_len: Total number of valid markers.
+        filter_stats: Dictionary with filter counts from _apply_quality_filters.
+        reads_thresh: Read threshold used.
+        base_majority: Base majority threshold used.
+        is_vcf: Whether processing VCF (affects initial lines).
+
+    Returns:
+        List of info strings for writing to .info file.
+    """
+    info_list = []
+    if is_vcf:
+        info_list.append("Total of mapped reads: VCF")
+        info_list.append("Total of unmapped reads: VCF")
+    info_list.append(f"Valid markers: {markerfile_len}")
+    info_list.append(f"Markers with zero reads: {filter_stats['zero_reads']}")
+    info_list.append(
+        f"Markers below the read threshold {{{reads_thresh}}}: {filter_stats['below_reads']}"
+    )
+    info_list.append(
+        f"Markers below the base majority threshold {{{base_majority}}}: {filter_stats['below_majority']}"
+    )
+    info_list.append(f"Markers with discordant genotype: {filter_stats['discordant']}")
+    info_list.append(f"Markers without haplogroup information: {filter_stats['total_filtered']}")
+    info_list.append(f"Markers with haplogroup information: {filter_stats['passed']}")
+    return info_list
+
+
+def _write_tree_sorted_output(
+        df_out: pd.DataFrame,
+        outputfile: Path,
+        columns: List[str]
+) -> None:
+    """
+    Write output file sorted by phylogenetic tree order.
+
+    Args:
+        df_out: DataFrame with marker results.
+        outputfile: Path to output file.
+        columns: Column names to write.
+    """
+    lst_df = df_out.values.tolist()
+    mappable_df: Dict[str, List] = {}
+    for lst in lst_df:
+        hg = lst[3]  # haplogroup column index
+        if hg not in mappable_df:
+            mappable_df[hg] = []
+        mappable_df[hg].append(lst)
+
+    tree = Tree(
+        yleaf_constants.DATA_FOLDER / yleaf_constants.HG_PREDICTION_FOLDER / yleaf_constants.TREE_FILE
+    )
+    with open(outputfile, "w") as f:
+        f.write('\t'.join(columns + ["depth"]) + "\n")
+        for node_key in tree.node_mapping:
+            if node_key not in mappable_df:
+                continue
+            depth = tree.get(node_key).depth
+            for lst in mappable_df[node_key]:
+                f.write('\t'.join(map(str, lst)) + f"\t{depth}\n")
+
+
+# =============================================================================
+# Main processing classes and functions
+# =============================================================================
+
+
 class MyFormatter(logging.Formatter):
     """
     Copied from MultiGeneBlast (my code)
@@ -75,18 +352,34 @@ def run_vcf(
         args: argparse.Namespace,
         sample_vcf_file: Path,
 ):
+    """
+    Process a single VCF file to extract Y-chromosome haplogroup markers.
+
+    This function reads marker positions from a reference file, filters the VCF
+    for relevant Y-chromosome positions, and extracts genotype information for
+    haplogroup prediction.
+
+    Args:
+        path_markerfile: Path to the marker reference file containing known
+            Y-chromosome SNP positions and their haplogroup associations.
+        base_out_folder: Base output directory for results.
+        args: Namespace containing command-line arguments including:
+            - reads_treshold: Minimum read count threshold
+            - base_majority: Minimum base percentage for acceptance
+            - reference_genome: Reference genome version (hg19/hg38/t2t)
+        sample_vcf_file: Path to the input VCF file to process.
+
+    Returns:
+        None. Results are written to output files in sample-specific folders.
+
+    Side Effects:
+        - Creates output folder for the sample
+        - Writes .out file with valid markers
+        - Writes .fmf file with filtered markers
+        - Writes .info file with processing statistics
+    """
     LOG.debug("Starting with extracting haplogroups...")
-    markerfile = pd.read_csv(path_markerfile, header=None, sep="\t",
-                             names=["chr", "marker_name", "haplogroup", "pos", "mutation", "anc",
-                                    "der"],
-                             dtype={"chr": str,
-                                    "marker_name": str,
-                                    "haplogroup": str,
-                                    "pos": int,
-                                    "mutation": str,
-                                    "anc": str,
-                                    "der": str,
-                                    }).drop_duplicates(subset='pos', keep='first', inplace=False)
+    markerfile = _load_marker_file(path_markerfile)
 
     sample_vcf_folder = base_out_folder / (sample_vcf_file.name.replace(".vcf.gz", ""))
     safe_create_dir(sample_vcf_folder, args.force)
@@ -156,56 +449,28 @@ def run_vcf(
     general_info_list = ["Total of mapped reads: VCF", "Total of unmapped reads: VCF"]
     general_info_list += ["Valid markers: " + str(markerfile_len)]
 
-    index_belowzero = df[df["called_reads"] == 0].index
-    df_belowzero = df[df.index.isin(index_belowzero)]
-    df_belowzero = df_belowzero.drop(['refbase', 'altbase'], axis=1)
-    df_belowzero["called_perc"] = "NA"
-    df_belowzero["called_base"] = "NA"
-    df_belowzero["state"] = "NA"
-    df_belowzero["Description"] = "Position with zero reads"
-
-    df = df[~df.index.isin(index_belowzero)]
-    bool_list_state = df[df["bool_state"] == False].index
-
-    # discordant genotypes
-    df_discordantgenotype = df[df.index.isin(bool_list_state)]
-    df_discordantgenotype = df_discordantgenotype.drop(["bool_state"], axis=1)
-    df_discordantgenotype["state"] = "NA"
-    df_discordantgenotype["Description"] = "Discordant genotype"
-    df = df[~df.index.isin(bool_list_state)]
-
     reads_thresh = int(args.reads_treshold)
-
-    # read threshold
-    df_readsthreshold = df[df["called_reads"] < reads_thresh]
-    df_readsthreshold["Description"] = "Below read threshold"
-    df = df[df["called_reads"] >= reads_thresh]
-
     base_majority = float(args.base_majority)
 
-    # filter by base percentage
-    df_basemajority = df[df["called_perc"] < base_majority]
-    df_basemajority["Description"] = "Below base majority"
-    df = df[df["called_perc"] >= base_majority]
+    # Use helper for filtering
+    df_out, df_fmf, stats = _apply_quality_filters(
+        df, 
+        reads_thresh=reads_thresh, 
+        base_majority=base_majority, 
+        reads_col='called_reads'
+    )
+    
+    # Rename 'called_reads' to 'reads' for output consistency if needed
+    if 'called_reads' in df_out.columns:
+        df_out['reads'] = df_out['called_reads']
+    
+    # Select final columns
+    out_columns = ['chr', 'pos', 'marker_name', 'haplogroup', 'mutation', 'anc', 'der', 'reads',
+                   'called_perc', 'called_base', 'state']
+    df_out = df_out[out_columns]
 
-    df_fmf = pd.concat([df_belowzero, df_readsthreshold, df_basemajority, df_discordantgenotype], axis=0, sort=True)
-    df_fmf['reads'] = df_fmf['called_reads']
-    df_fmf = df_fmf[['chr', 'pos', 'marker_name', 'haplogroup', 'mutation', 'anc', 'der', 'reads',
-                     'called_perc', 'called_base', 'state', 'Description']]
-
-    df_out = df
-    df_out['reads'] = df_out['called_reads']
-    df_out = df_out[['chr', 'pos', 'marker_name', 'haplogroup', 'mutation', 'anc', 'der', 'reads',
-                     'called_perc', 'called_base', 'state']]
-
-    general_info_list.append("Markers with zero reads: " + str(len(df_belowzero)))
-    general_info_list.append(
-        "Markers below the read threshold {" + str(reads_thresh) + "}: " + str(len(df_readsthreshold)))
-    general_info_list.append(
-        "Markers below the base majority threshold {" + str(base_majority) + "}: " + str(len(df_basemajority)))
-    general_info_list.append("Markers with discordant genotype: " + str(len(df_discordantgenotype)))
-    general_info_list.append("Markers without haplogroup information: " + str(len(df_fmf)))
-    general_info_list.append("Markers with haplogroup information: " + str(len(df_out)))
+    # Generate stats
+    general_info_list.extend(_generate_info_statistics(markerfile_len, stats, reads_thresh, base_majority))
 
     write_info_file(sample_vcf_folder, general_info_list)
 
@@ -215,37 +480,14 @@ def run_vcf(
 
     if use_old:
         df_out = df_out.sort_values(by=['haplogroup'], ascending=True)
-        df_out = df_out[
-            ["chr", "pos", "marker_name", "haplogroup", "mutation", "anc", "der", "reads", "called_perc",
-             "called_base",
-             "state"]]
         df_fmf.to_csv(fmf_output, sep="\t", index=False)
         df_out.to_csv(outputfile, sep="\t", index=False)
         return
 
-    df_out = df_out[
-        ["chr", "pos", "marker_name", "haplogroup", "mutation", "anc", "der", "reads", "called_perc", "called_base",
-         "state"]]
     df_fmf.to_csv(fmf_output, sep="\t", index=False)
 
-    # sort based on the tree
-    lst_df = df_out.values.tolist()
-    mappable_df = {}
-    for lst in lst_df:
-        if lst[3] not in mappable_df:
-            mappable_df[lst[3]] = []
-        mappable_df[lst[3]].append(lst)
-
-    tree = Tree(yleaf_constants.DATA_FOLDER / yleaf_constants.HG_PREDICTION_FOLDER / yleaf_constants.TREE_FILE)
-    with open(outputfile, "w") as f:
-        f.write('\t'.join(["chr", "pos", "marker_name", "haplogroup", "mutation", "anc", "der", "reads",
-                           "called_perc", "called_base", "state", "depth\n"]))
-        for node_key in tree.node_mapping:
-            if node_key not in mappable_df:
-                continue
-            depth = tree.get(node_key).depth
-            for lst in mappable_df[node_key]:
-                f.write('\t'.join(map(str, lst)) + f"\t{depth}\n")
+    # Write output sorted by phylogenetic tree order
+    _write_tree_sorted_output(df_out, outputfile, out_columns)
 
     LOG.info(f"Finished extracting genotypes for {sample_vcf_file.name}")
 
@@ -256,6 +498,29 @@ def main_vcf_split(
         args: argparse.Namespace,
         vcf_file: Path
 ):
+    """
+    Split a multi-sample VCF file and process each sample individually.
+
+    This function handles VCF files containing multiple samples by:
+    1. Sorting the VCF file
+    2. Filtering by Y-chromosome regions from the BED file
+    3. Splitting into individual sample VCF files
+    4. Processing each sample through the haplogroup extraction pipeline
+
+    Args:
+        position_bed_file: Path to BED file containing Y-chromosome marker positions.
+        base_out_folder: Base output directory for results.
+        args: Namespace containing command-line arguments.
+        vcf_file: Path to the multi-sample VCF file.
+
+    Returns:
+        None. Results are written to sample-specific output folders.
+
+    Side Effects:
+        - Creates filtered_vcf_files subdirectory
+        - Writes sorted and filtered VCF files
+        - Processes each sample and writes haplogroup results
+    """
     # first sort the vcf file
     sorted_vcf_file = base_out_folder / (vcf_file.name.replace(".vcf.gz", ".sorted.vcf.gz"))
     try:
@@ -320,6 +585,30 @@ def main_vcf(
         args: argparse.Namespace,
         base_out_folder: Path
 ):
+    """
+    Main entry point for VCF file processing workflow.
+
+    Orchestrates the processing of VCF files for Y-chromosome haplogroup
+    prediction. Handles both single-sample and multi-sample VCF files,
+    routing them to appropriate processing functions.
+
+    Args:
+        args: Namespace containing command-line arguments including:
+            - vcffile: Path to input VCF file(s)
+            - reference_genome: Reference genome version
+            - use_old: Whether to use old prediction method
+            - ancient_DNA: Whether processing ancient DNA samples
+            - threads: Number of parallel threads
+        base_out_folder: Base output directory for all results.
+
+    Returns:
+        None. Processing results are written to output files.
+
+    Side Effects:
+        - Creates output directory structure
+        - Writes filtered VCF files
+        - Writes haplogroup prediction results
+    """
     position_bed_file = get_position_bed_file(args.reference_genome, args.use_old, args.ancient_DNA)
     path_markerfile = get_position_file(args.reference_genome, args.use_old, args.ancient_DNA)
 
@@ -342,35 +631,28 @@ def main_vcf(
             p.map(partial(run_vcf, path_markerfile, base_out_folder, args), files)
 
 
-def main():
-    start_time = time.time()
-    print("Erasmus MC Department of Genetic Identification\nYleaf: software tool for human Y-chromosomal "
-          f"phylogenetic analysis and haplogroup inference v{__version__}")
-    logo()
+def _resolve_reference_genome(args: argparse.Namespace) -> str:
+    """Determine the reference genome version to use."""
+    if args.reference_genome:
+        return args.reference_genome
 
-    args = get_arguments()
-    out_folder = Path(args.output)
-    safe_create_dir(out_folder, args.force)
-    setup_logger(out_folder)
-
-    LOG.info(f"Running Yleaf with command: {' '.join(sys.argv)}")
-
-    # Automatic Reference Genome Detection
-    if args.reference_genome is None:
-        LOG.info("No reference genome specified. Attempting to detect from input file header...")
-        input_file = None
-        if args.bamfile: input_file = args.bamfile
-        elif args.cramfile: input_file = args.cramfile
-        # Note: Detection from VCF/FastQ is harder/impossible efficiently without reading big files, skipping for now.
+    LOG.info("No reference genome specified. Attempting to detect from input file header...")
+    
+    input_file = None
+    if args.bamfile: input_file = args.bamfile
+    elif args.cramfile: input_file = args.cramfile
+    
+    if input_file:
+        detected = detect_reference_genome(input_file)
+        LOG.info(f"Detected reference genome: {detected}")
+        return detected
         
-        if input_file:
-            args.reference_genome = detect_reference_genome(input_file)
-            LOG.info(f"Detected reference genome: {args.reference_genome}")
-        else:
-            LOG.error("Reference genome must be specified for VCF/FastQ inputs or if detection fails.")
-            sys.exit(1)
+    LOG.error("Reference genome must be specified for VCF/FastQ inputs or if detection fails.")
+    sys.exit(1)
 
-    # Manual Reference Override
+
+def _setup_custom_reference(args: argparse.Namespace):
+    """Apply manual reference FASTA override if specified."""
     if args.ref_fasta:
         LOG.info(f"Overriding reference FASTA with: {args.ref_fasta}")
         # Update constants dynamically
@@ -384,9 +666,9 @@ def main():
             yleaf_constants.T2T_FULL_GENOME = args.ref_fasta
             yleaf_constants.T2T_Y_CHROMOSOME = args.ref_fasta
 
-    # make sure the reference genome is present before doing something else, if not present it is downloaded
-    check_reference(args.reference_genome)
 
+def _process_input_files(args: argparse.Namespace, out_folder: Path):
+    """Dispatch processing based on input file type."""
     if args.fastq:
         main_fastq(args, out_folder)
     elif args.bamfile:
@@ -406,8 +688,13 @@ def main():
     else:
         LOG.error("Please specify either a bam, a cram, a fastq, or a vcf file")
         raise ValueError("Please specify either a bam, a cram, a fastq, or a vcf file")
+
+
+def _run_post_processing(args: argparse.Namespace, out_folder: Path, start_time: float):
+    """Run prediction, visualization, and reporting."""
     hg_out = out_folder / PREDICTION_OUT_FILE_NAME
     predict_haplogroup(out_folder, hg_out, args.use_old, args.prediction_quality, args.threads)
+    
     if args.draw_haplogroups:
         draw_haplogroups(hg_out, args.collapsed_draw_mode)
 
@@ -423,13 +710,36 @@ def main():
         log_input = "Unknown"
         if args.bamfile: log_input = args.bamfile
         elif args.cramfile: log_input = args.cramfile
-        elif args.fastq: log_input = args.fastq # might be a list
+        elif args.fastq: log_input = args.fastq 
         elif args.vcffile: log_input = args.vcffile
         
         duration = time.time() - start_time
         summary_logger.log_run(out_folder, log_input, args.reference_genome, duration=duration)
     except Exception as e:
         LOG.error(f"Failed to update summary log: {e}")
+
+
+def main():
+    start_time = time.time()
+    print("Erasmus MC Department of Genetic Identification\nYleaf: software tool for human Y-chromosomal "
+          f"phylogenetic analysis and haplogroup inference v{__version__}")
+    logo()
+
+    args = get_arguments()
+    out_folder = Path(args.output)
+    safe_create_dir(out_folder, args.force)
+    setup_logger(out_folder)
+
+    LOG.info(f"Running Yleaf with command: {' '.join(sys.argv)}")
+
+    args.reference_genome = _resolve_reference_genome(args)
+    _setup_custom_reference(args)
+    
+    # make sure the reference genome is present before doing something else, if not present it is downloaded
+    check_reference(args.reference_genome)
+
+    _process_input_files(args, out_folder)
+    _run_post_processing(args, out_folder, start_time)
 
     LOG.info("Done!")
 
@@ -480,21 +790,22 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument("-o", "--output", required=True,
                         help="Folder name containing outputs", metavar="STRING")
     parser.add_argument("-r", "--reads_treshold",
-                        help="The minimum number of reads for each base. (default=10)",
+                        help=f"The minimum number of reads for each base. (default={yleaf_constants.DEFAULT_READ_THRESHOLD})",
                         type=int, required=False,
-                        default=10, metavar="INT")
+                        default=yleaf_constants.DEFAULT_READ_THRESHOLD, metavar="INT")
     parser.add_argument("-q", "--quality_thresh",
-                        help="Minimum quality for each read, integer between 10 and 40. [10-40] (default=20)",
-                        type=int, required=False, metavar="INT", default=20)
+                        help=f"Minimum quality for each read, integer between 10 and 40. [10-40] (default={yleaf_constants.DEFAULT_QUALITY_THRESHOLD})",
+                        type=int, required=False, metavar="INT", default=yleaf_constants.DEFAULT_QUALITY_THRESHOLD)
     parser.add_argument("-b", "--base_majority",
-                        help="The minimum percentage of a base result for acceptance, integer between 50 and 99."
-                             " [50-99] (default=90)",
-                        type=int, required=False, metavar="INT", default=90)
+                        help=f"The minimum percentage of a base result for acceptance, integer between 50 and 99."
+                             f" [50-99] (default={yleaf_constants.DEFAULT_MAJORITY_THRESHOLD})",
+                        type=int, required=False, metavar="INT", default=yleaf_constants.DEFAULT_MAJORITY_THRESHOLD)
     parser.add_argument("-t", "--threads", dest="threads",
                         help="The number of processes to use when running Yleaf.",
                         type=int, default=1, metavar="INT")
-    parser.add_argument("-pq", "--prediction_quality", type=float, required=False, default=0.95, metavar="FLOAT",
-                        help="The minimum quality of the prediction (QC-scores) for it to be accepted. [0-1] (default=0.95)")
+    parser.add_argument("-pq", "--prediction_quality", type=float, required=False,
+                        default=yleaf_constants.DEFAULT_MIN_SCORE, metavar="FLOAT",
+                        help=f"The minimum quality of the prediction (QC-scores) for it to be accepted. [0-1] (default={yleaf_constants.DEFAULT_MIN_SCORE})")
 
     # arguments for prediction
     parser.add_argument("-old", "--use_old", dest="use_old",
@@ -610,8 +921,10 @@ def main_fastq(
     bam_folder = out_folder / yleaf_constants.FASTQ_BAM_FILE_FOLDER
     try:
         os.mkdir(bam_folder)
-    except IOError:
-        pass
+    except FileExistsError:
+        LOG.debug(f"Directory {bam_folder} already exists, using existing directory")
+    except OSError as e:
+        LOG.warning(f"Could not create directory {bam_folder}: {e}")
     LOG.info("Creating bam files from fastq files...")
 
     # For paired end fastq files (with _R1 and _R2 in the file name) and gzipped fastq files with .gz extension align the pairs together
@@ -620,27 +933,40 @@ def main_fastq(
             fastq_file2 = Path(str(fastq_file).replace("_R1", "_R2"))
             LOG.info(f"Starting with running for {fastq_file} and {fastq_file2}")
             sam_file = bam_folder / "temp_fastq_sam.sam"
-            fastq_cmd = f"minimap2 -ax sr -k14 -w7 -t {args.threads} {reference} {fastq_file} {fastq_file2} > {sam_file}"
-            call_command(fastq_cmd)
+            # Use external_tools for cross-platform compatibility (no shell=True)
+            external_tools.minimap2_align(
+                reference=Path(reference),
+                fastq_files=[fastq_file, fastq_file2],
+                output_sam=sam_file,
+                threads=args.threads
+            )
             bam_file = bam_folder / (fastq_file.name.rsplit("_R1", 1)[0] + ".bam")
-            cmd = "samtools view -@ {} -bS {} | samtools sort -@ {} -m 2G -o {}".format(args.threads, sam_file,
-                                                                                        args.threads, bam_file)
-            call_command(cmd)
-            cmd = "samtools index -@ {} {}".format(args.threads, bam_file)
-            call_command(cmd)
+            external_tools.samtools_view_sort(
+                input_file=sam_file,
+                output_bam=bam_file,
+                threads=args.threads,
+                input_is_sam=True
+            )
+            external_tools.samtools_index(bam_file, threads=args.threads)
             os.remove(sam_file)
         elif "_R1" not in str(fastq_file) and "_R2" not in str(fastq_file) and ".gz" in str(fastq_file):
             LOG.info(f"Starting with running for {fastq_file}")
             sam_file = bam_folder / "temp_fastq_sam.sam"
-
-            fastq_cmd = f"minimap2 -ax sr -k14 -w7 -t {args.threads} {reference} {fastq_file} > {sam_file}"
-            call_command(fastq_cmd)
+            # Use external_tools for cross-platform compatibility (no shell=True)
+            external_tools.minimap2_align(
+                reference=Path(reference),
+                fastq_files=[fastq_file],
+                output_sam=sam_file,
+                threads=args.threads
+            )
             bam_file = bam_folder / (fastq_file.name.rsplit(".", 1)[0] + ".bam")
-            cmd = "samtools view -@ {} -bS {} | samtools sort -@ {} -m 2G -o {}".format(args.threads, sam_file,
-                                                                                        args.threads, bam_file)
-            call_command(cmd)
-            cmd = "samtools index -@ {} {}".format(args.threads, bam_file)
-            call_command(cmd)
+            external_tools.samtools_view_sort(
+                input_file=sam_file,
+                output_bam=bam_file,
+                threads=args.threads,
+                input_is_sam=True
+            )
+            external_tools.samtools_index(bam_file, threads=args.threads)
             os.remove(sam_file)
     args.bamfile = bam_folder
     main_bam_cram(args, out_folder, True)
@@ -689,10 +1015,23 @@ def call_command(
     """
     Call a command on the command line and make sure to exit if it fails.
 
-    Note: This function uses shell=True and is kept for backward compatibility.
-    For cross-platform code, prefer using external_tools module functions.
+    .. deprecated::
+        This function uses shell=True which is a security risk and not cross-platform.
+        Use external_tools module functions instead:
+        - external_tools.minimap2_align() for minimap2
+        - external_tools.samtools_view_sort() for samtools view | sort
+        - external_tools.samtools_index() for samtools index
+        - external_tools.run_command() for other commands (without shell)
 
-    Warning: On Windows, shell=True requires commands to be Windows-compatible.
+    Args:
+        command_str: Shell command string to execute
+        stdout_location: Optional file handle for stdout redirection
+
+    Raises:
+        SystemExit: If command fails with non-zero return code
+
+    Warning:
+        On Windows, shell=True requires commands to be Windows-compatible.
     """
     LOG.debug(f"Started running the following command: {command_str}")
 
@@ -949,12 +1288,45 @@ def extract_haplogroups(
         use_old: bool,
         general_info_list: List[str]
 ):
-    LOG.debug("Starting with extracting haplogroups...")
-    markerfile = pd.read_csv(path_markerfile, header=None, sep="\t")
-    markerfile.columns = ["chr", "marker_name", "haplogroup", "pos", "mutation", "anc", "der"]
-    markerfile = markerfile.drop_duplicates(subset='pos', keep='first', inplace=False)
+    """
+    Extract Y-chromosome haplogroup markers from pileup data.
 
-    # packagemanagement is the best
+    This is the core function for processing sequencing data and extracting
+    Y-chromosome markers. It applies quality filters to determine which markers
+    pass thresholds and which are filtered out.
+
+    Args:
+        path_markerfile: Path to reference file containing marker positions
+            and their haplogroup associations.
+        reads_thresh: Minimum number of reads required for a position to pass.
+        base_majority: Minimum percentage of reads that must support the
+            called allele (0-100).
+        path_pileupfile: Path to samtools mpileup output file.
+        fmf_output: Path to write filtered/failed markers (.fmf file).
+        outputfile: Path to write valid markers (.out file).
+        is_bam_file: True if processing BAM/CRAM, False if processing VCF.
+        use_old: Whether to use old ISOGG-based marker positions.
+        general_info_list: List to append processing statistics for logging.
+
+    Returns:
+        None. Results are written to output files.
+
+    Output Files:
+        - outputfile (.out): Tab-separated file with columns:
+            haplogroup, pos, marker_name, mutation, anc, der, state
+        - fmf_output (.fmf): Same format with additional 'Description' column
+            explaining why marker was filtered.
+
+    Filter Reasons:
+        - "Position with zero reads": No coverage at position
+        - "Reads below threshold": Coverage below reads_thresh
+        - "Base majority below threshold": Allele frequency below base_majority
+        - "Discordant genotype": Called allele doesn't match ancestral/derived
+    """
+    LOG.debug("Starting with extracting haplogroups...")
+    markerfile = _load_marker_file(path_markerfile)
+
+    # Load pileup file
     pileupfile = pd.read_csv(path_pileupfile, header=None, sep="\t",
                              dtype={0: str, 1: int, 2: str, 3: int, 4: str, 5: str},
                              on_bad_lines='skip')
@@ -980,80 +1352,62 @@ def extract_haplogroups(
     # valid markers from positionsfile.txt
     general_info_list.append("Valid markers: " + str(markerfile_len))
 
-    index_belowzero = df[df["reads"] == 0].index
-    df_belowzero = df[df.index.isin(index_belowzero)]
-    df_belowzero = df_belowzero.drop(['refbase', 'align', 'quality'], axis=1)
-    df_belowzero["called_perc"] = "NA"
-    df_belowzero["called_base"] = "NA"
-    df_belowzero["state"] = "NA"
-    df_belowzero["Description"] = "Position with zero reads"
-
-    df = df[~df.index.isin(index_belowzero)]
-
-    freq_dict = get_frequency_table(df.values)
-    df_freq_table = pd.DataFrame.from_dict(freq_dict, orient='index')
-    df_freq_table.columns = ["A", "T", "G", "C", "+", "-"]
-
-    df_freq_table = df_freq_table.drop(['+', '-'], axis=1)
-    df = df.drop(['refbase', 'align', 'quality'], axis=1)
-
-    list_col_indices = np.argmax(df_freq_table.values, axis=1)
-    called_base = df_freq_table.columns[list_col_indices]  # noqa
-    total_count_bases = np.sum(df_freq_table.values, axis=1)
-    max_count_bases = np.max(df_freq_table, axis=1)
+    # Calculate statistics for non-zero reads
+    non_zero_mask = df["reads"] > 0
+    df_nonzero = df[non_zero_mask].copy()
     
-    # Calculate percentage, handling division by zero if total_count_bases is 0
-    with np.errstate(divide='ignore', invalid='ignore'):
-        called_perc = (max_count_bases / total_count_bases) * 100
-        called_perc = called_perc.fillna(0) # Replace NaN with 0
-        called_perc = called_perc.replace([np.inf, -np.inf], 0) # Replace Inf
-        called_perc = called_perc.round(1)
+    # Initialize columns with defaults
+    df["called_perc"] = 0.0
+    df["called_base"] = "NA"
+    df["state"] = "NA"
+    df["bool_state"] = False
 
-    bool_anc = np.equal(np.array(called_base), df["anc"].values)
-    bool_der = np.equal(np.array(called_base), df["der"].values)
+    if not df_nonzero.empty:
+        freq_dict = get_frequency_table(df_nonzero.values)
+        df_freq_table = pd.DataFrame.from_dict(freq_dict, orient='index')
+        df_freq_table.columns = ["A", "T", "G", "C", "+", "-"]
+        df_freq_table = df_freq_table.drop(['+', '-'], axis=1)
+        
+        list_col_indices = np.argmax(df_freq_table.values, axis=1)
+        called_base = df_freq_table.columns[list_col_indices]
+        total_count_bases = np.sum(df_freq_table.values, axis=1)
+        max_count_bases = np.max(df_freq_table, axis=1)
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            called_perc = (max_count_bases / total_count_bases) * 100
+            called_perc = called_perc.fillna(0).replace([np.inf, -np.inf], 0).round(1)
+            
+        bool_anc = np.equal(np.array(called_base), df_nonzero["anc"].values)
+        bool_der = np.equal(np.array(called_base), df_nonzero["der"].values)
+        
+        bool_list_anc = np.where(bool_anc, 'A', 'D')
+        bool_list_der = np.where(bool_der, 'D', 'A')
+        bool_list_state = np.equal(bool_list_anc, bool_list_der)
+        
+        df_nonzero["called_perc"] = np.array(called_perc, dtype=float)
+        df_nonzero["called_base"] = called_base
+        df_nonzero["state"] = bool_list_anc
+        df_nonzero["bool_state"] = bool_list_state
+        
+        df.update(df_nonzero)
 
-    bool_list_anc = np.where(bool_anc, 'A', 'D')
-    bool_list_anc = bool_list_anc.astype('object')
-    bool_list_der = np.where(bool_der, 'D', 'A')
-    bool_list_der = bool_list_der.astype('object')
-    bool_list_state = np.equal(bool_list_anc, bool_list_der)
+    # Apply filters using helper
+    reads_thresh = int(reads_thresh)
+    base_majority = float(base_majority)
+    
+    df_out, df_fmf, stats = _apply_quality_filters(
+        df,
+        reads_thresh=reads_thresh,
+        base_majority=base_majority,
+        reads_col='reads'
+    )
+    
+    out_columns = ['chr', 'pos', 'marker_name', 'haplogroup', 'mutation', 'anc', 'der', 'reads',
+                   'called_perc', 'called_base', 'state']
+    df_out = df_out[out_columns]
 
-    df["called_perc"] = np.array(called_perc, dtype=int)
-    df["called_base"] = called_base
-    df["state"] = bool_list_anc
-    df["bool_state"] = bool_list_state
-
-    # discordant genotypes
-    df_discordantgenotype = df[~bool_list_state]
-    df_discordantgenotype = df_discordantgenotype.drop(["bool_state"], axis=1)
-    df_discordantgenotype["state"] = "NA"
-    df_discordantgenotype["Description"] = "Discordant genotype"
-    df = df[bool_list_state]
-
-    # read threshold
-    df_readsthreshold = df[df["reads"] < reads_thresh]
-    df_readsthreshold["Description"] = "Below read threshold"
-    df = df[df["reads"] >= reads_thresh]
-
-    # filter by base percentage
-    df_basemajority = df[df["called_perc"] < base_majority]
-    df_basemajority["Description"] = "Below base majority"
-    df = df[df["called_perc"] >= base_majority]
-
-    df_fmf = pd.concat([df_belowzero, df_readsthreshold, df_basemajority, df_discordantgenotype], axis=0, sort=True)
-    df_fmf = df_fmf[['chr', 'pos', 'marker_name', 'haplogroup', 'mutation', 'anc', 'der', 'reads',
-                     'called_perc', 'called_base', 'state', 'Description']]
-
-    df_out = df.drop(["bool_state"], axis=1)
-
-    general_info_list.append("Markers with zero reads: " + str(len(df_belowzero)))
-    general_info_list.append(
-        "Markers below the read threshold {" + str(reads_thresh) + "}: " + str(len(df_readsthreshold)))
-    general_info_list.append(
-        "Markers below the base majority threshold {" + str(base_majority) + "}: " + str(len(df_basemajority)))
-    general_info_list.append("Markers with discordant genotype: " + str(len(df_discordantgenotype)))
-    general_info_list.append("Markers without haplogroup information: " + str(len(df_fmf)))
-    general_info_list.append("Markers with haplogroup information: " + str(len(df_out)))
+    # Generate stats
+    general_info_list.extend(_generate_info_statistics(markerfile_len, stats, reads_thresh, base_majority))
 
     if use_old:
         df_out = df_out.sort_values(by=['haplogroup'], ascending=True)
@@ -1064,29 +1418,13 @@ def extract_haplogroups(
         df_out.to_csv(outputfile, sep="\t", index=False)
         return
 
-    df_out = df_out[
-        ["chr", "pos", "marker_name", "haplogroup", "mutation", "anc", "der", "reads", "called_perc", "called_base",
-         "state"]]
+    out_columns = ["chr", "pos", "marker_name", "haplogroup", "mutation", "anc", "der", "reads",
+                   "called_perc", "called_base", "state"]
+    df_out = df_out[out_columns]
     df_fmf.to_csv(fmf_output, sep="\t", index=False)
 
-    # sort based on the tree
-    lst_df = df_out.values.tolist()
-    mappable_df = {}
-    for lst in lst_df:
-        if lst[3] not in mappable_df:
-            mappable_df[lst[3]] = []
-        mappable_df[lst[3]].append(lst)
-
-    tree = Tree(yleaf_constants.DATA_FOLDER / yleaf_constants.HG_PREDICTION_FOLDER / yleaf_constants.TREE_FILE)
-    with open(outputfile, "w") as f:
-        f.write('\t'.join(["chr", "pos", "marker_name", "haplogroup", "mutation", "anc", "der", "reads",
-                           "called_perc", "called_base", "state", "depth\n"]))
-        for node_key in tree.node_mapping:
-            if node_key not in mappable_df:
-                continue
-            depth = tree.get(node_key).depth
-            for lst in mappable_df[node_key]:
-                f.write('\t'.join(map(str, lst)) + f"\t{depth}\n")
+    # Write output sorted by phylogenetic tree order
+    _write_tree_sorted_output(df_out, outputfile, out_columns)
 
 
 def replace_with_bases(
@@ -1109,6 +1447,31 @@ def get_frequency_table(
 def get_frequencies(
         sequence: str
 ) -> Dict[str, int]:
+    """
+    Parse samtools pileup sequence string and count base frequencies.
+
+    This function parses the complex pileup format from samtools mpileup
+    and extracts counts for each nucleotide and indel type.
+
+    Args:
+        sequence: Pileup sequence string from samtools mpileup output.
+            Uses standard pileup encoding:
+            - A,T,G,C: nucleotides
+            - ^: start of read (followed by mapping quality char)
+            - $: end of read
+            - +N: insertion of N bases (followed by inserted sequence)
+            - -N: deletion of N bases (followed by deleted sequence)
+            - *: placeholder for deleted base
+
+    Returns:
+        Dict mapping nucleotide/event to count:
+        {"A": int, "T": int, "G": int, "C": int, "-": int, "+": int}
+        Note: "-" includes both deletions and * placeholders.
+
+    Example:
+        >>> get_frequencies("AAATTT^~G+2AC-1G")
+        {"A": 3, "T": 3, "G": 1, "C": 0, "-": 1, "+": 1}
+    """
     fastadict = {"A": 0, "T": 0, "G": 0, "C": 0, "-": 0, "+": 0, "*": 0}
     sequence = sequence.upper()
     index = 0

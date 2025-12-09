@@ -5,11 +5,10 @@ from pathlib import Path
 import sys
 import shutil
 
-print("DEBUG: Script started", flush=True)
-
 # Add 'yleaf' to python path to import internal modules
 sys.path.append(str(Path(__file__).parent))
 from yleaf import summary_logger
+from yleaf import yleaf_constants
 
 def check_index_fast(bam_path):
     """
@@ -47,14 +46,16 @@ def ensure_index(bam_path):
     for ext in ['.bam.bai', '.bai', '.cram.crai', '.crai']:
         idx = bam_path.with_suffix(ext)
         if idx.exists():
-            try: idx.unlink()
-            except OSError: pass
+            try:
+                idx.unlink()
+            except OSError as e:
+                print(f"  [Index] Warning: Could not remove old index {idx}: {e}")
             
     # 2. Re-create index
     try:
         cmd = ["samtools", "index", str(bam_path)]
         # We allow time for indexing (it's heavy), but we don't wait for Yleaf to hang
-        subprocess.check_call(cmd, timeout=600)
+        subprocess.check_call(cmd, timeout=yleaf_constants.INDEX_TIMEOUT)
         print(f"  [Index] Re-indexing complete.")
     except subprocess.TimeoutExpired:
         print(f"  [Index] Failed: Indexing timed out (>10m).")
@@ -92,7 +93,7 @@ def run_yleaf(bam_path, output_base_dir):
         print(f"  [1/2] Starting Yleaf subprocess...", end='', flush=True)
         start_time = time.time()
         # Safety net timeout still exists, but we rely on ensure_index to catch bad files
-        MAX_DURATION = 900 
+        MAX_DURATION = yleaf_constants.BATCH_PROCESS_TIMEOUT 
         
         with open(log_file_path, "w") as log:
             # Pass the modified environment
@@ -119,8 +120,9 @@ def run_yleaf(bam_path, output_base_dir):
     if output_dir.exists() and output_dir.is_dir():
         try:
             shutil.move(str(log_file_path), str(final_log_path))
-            log_file_path = final_log_path # Update ref for error message
-        except Exception: pass
+            log_file_path = final_log_path  # Update ref for error message
+        except (OSError, shutil.Error) as e:
+            print(f"  [Log] Warning: Could not move log file: {e}")
     
     if exit_code == 0:
         print(f"Successfully processed {bam_path.name}\n")

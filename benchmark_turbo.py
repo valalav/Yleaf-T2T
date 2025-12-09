@@ -45,8 +45,9 @@ def turbo_method(bam_path, positions_df):
             # Sum them to get reads
             total_reads = sum([c[0] for c in counts])
             results.append(total_reads)
-        except Exception:
-            pass
+        except (ValueError, KeyError) as e:
+            # Skip positions that cannot be read (e.g., out of range, missing contig)
+            print(f"  Warning: Skipping position {row['pos']}: {e}")
             
     end = time.time()
     print(f"Turbo Time: {end - start:.4f} sec. Processed: {len(results)}")
