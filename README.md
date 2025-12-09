@@ -1,4 +1,18 @@
-# Yleaf: software for human Y-chromosomal haplogroup inference from next generation sequencing data
+# Yleaf v3.2 (Enhanced Batch Processing & T2T Support)
+
+**This is a modified version of Yleaf featuring robust batch processing, T2T reference support, and crash protection.**
+
+*   **Original Authors:** Arwin Ralf, Diego Montiel Gonzalez, Kaiyin Zhong, Manfred Kayser (Erasmus MC)
+*   **Enhanced By:** [Your Name/Organization]
+*   **Key Features:** 
+    *   **Batch Processing:** Process hundreds of BAM/CRAM files automatically (`batch_process.py`).
+    *   **Fast Fail:** Automatically detects and skips corrupted files or broken indices without hanging.
+    *   **Auto-Healing:** Attempts to fix missing or outdated indices (`samtools index`) on the fly.
+    *   **T2T Support:** Full support for the T2T-CHM13 reference genome.
+
+---
+
+# Original Yleaf Description
 
 #### Arwin Ralf, Diego Montiel Gonzalez, Kaiyin Zhong and Manfred Kayser
 
