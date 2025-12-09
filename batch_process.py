@@ -123,6 +123,9 @@ def ensure_index(bam_path):
 
 def run_yleaf(bam_path, output_base_dir):
     bam_path = Path(bam_path)
+    # Ensure base output directory exists
+    Path(output_base_dir).mkdir(parents=True, exist_ok=True)
+    
     output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
     # Don't create output_dir here, let Yleaf do it.
     
