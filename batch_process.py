@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import shutil
 import time
+import multiprocessing
+from functools import partial
 
 # Add 'yleaf' to python path to import internal modules
 sys.path.append(str(Path(__file__).parent))
@@ -94,10 +96,13 @@ def ensure_index(bam_path):
     try:
         cmd = ["samtools", "index"]
         
-        # Add reference for CRAM
+        # Prepare environment for CRAM reference resolution
+        env = os.environ.copy()
         if bam_path.suffix == '.cram':
             if ref_path and ref_path.exists():
-                cmd.extend(["-T", str(ref_path)])
+                env['SAMTOOLS_CRAM_REF'] = str(ref_path)
+                # Older samtools versions might also use REF_PATH
+                env['REF_PATH'] = str(ref_path)
             else:
                 # If no ref found for CRAM, indexing will likely fail/hang
                 print(f"  [Index] Warning: CRAM file but no reference detected/found. Indexing may fail.")
@@ -105,7 +110,7 @@ def ensure_index(bam_path):
         cmd.append(str(bam_path))
         
         # We allow time for indexing (it's heavy), but we don't wait for Yleaf to hang
-        subprocess.check_call(cmd, timeout=yleaf_constants.INDEX_TIMEOUT)
+        subprocess.check_call(cmd, timeout=yleaf_constants.INDEX_TIMEOUT, env=env)
         print(f"  [Index] Re-indexing complete.")
     except subprocess.TimeoutExpired:
         print(f"  [Index] Failed: Indexing timed out (>10m).")
@@ -198,11 +203,35 @@ def check_bam_integrity(bam_path):
         # samtools not found, assume ok
         return True
 
+def process_single_file(file_path, output_dir):
+    """
+    Worker function to process a single BAM/CRAM file.
+    """
+    if not file_path.exists():
+        print(f"File not found, skipping: {file_path}")
+        return
+
+    # 0. Integrity Check
+    if not check_bam_integrity(file_path):
+        print(f"Skipping corrupted file: {file_path.name}\n")
+        summary_logger.log_failure(file_path, "Skipped: File Corrupted")
+        return
+
+    # 1. Check/Ensure Index
+    if not ensure_index(file_path):
+        print(f"Skipping {file_path.name} due to invalid/missing index.")
+        summary_logger.log_failure(file_path, "Skipped: Index Invalid")
+        return
+        
+    # 2. Run Yleaf
+    run_yleaf(file_path, output_dir)
+
 def main():
     parser = argparse.ArgumentParser(description="Batch process BAM files with Yleaf.")
     parser.add_argument("input_source", help="Text file with list of paths OR directory to scan (if -d is used)")
     parser.add_argument("-d", "--directory-mode", action="store_true", help="Treat input_source as a directory and scan recursively for .bam/.cram")
     parser.add_argument("-o", "--output_dir", default=".", help="Base directory for output folders")
+    parser.add_argument("-t", "--threads", type=int, default=1, help="Number of files to process in parallel (default: 1)")
     
     args = parser.parse_args()
     
@@ -230,28 +259,18 @@ def main():
             lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
             files_to_process = [Path(line) for line in lines]
         
-    print(f"Found {len(files_to_process)} files to process.")
+    print(f"Found {len(files_to_process)} files to process. Using {args.threads} threads.")
     
-    for file_path in files_to_process:
+    if args.threads > 1:
+        # Create output directory ahead of time to avoid race conditions
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
         
-        if not file_path.exists():
-            print(f"File not found, skipping: {file_path}")
-            continue
-            
-        # 0. Integrity Check
-        if not check_bam_integrity(file_path):
-            print(f"Skipping corrupted file: {file_path.name}\n")
-            summary_logger.log_failure(file_path, "Skipped: File Corrupted")
-            continue
-
-        # 1. Check/Ensure Index
-        if not ensure_index(file_path):
-            print(f"Skipping {file_path.name} due to invalid/missing index.")
-            summary_logger.log_failure(file_path, "Skipped: Index Invalid")
-            continue
-            
-        # 2. Run Yleaf
-        run_yleaf(file_path, args.output_dir)
+        with multiprocessing.Pool(processes=args.threads) as pool:
+            # Use partial to pass the constant output_dir argument
+            pool.map(partial(process_single_file, output_dir=args.output_dir), files_to_process)
+    else:
+        for file_path in files_to_process:
+            process_single_file(file_path, args.output_dir)
 
 if __name__ == "__main__":
     main()
