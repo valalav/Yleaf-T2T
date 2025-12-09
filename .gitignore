@@ -18,6 +18,12 @@ __pycache__/
 *.egg-info/
 summary_table.csv
 .venv/
-.venv/
-.venv/
-.venv/
+
+# Results and Logs
+output_*/
+results/
+*.log
+*.hg
+full_terminal_output.log
+wgs_full_run.log
+
