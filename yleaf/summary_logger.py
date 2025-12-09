@@ -85,3 +85,36 @@ def log_run(output_folder, input_file_path, ref_genome, duration=0.0):
         print(f"Summary log updated: {csv_path}")
     except Exception as e:
         print(f"Failed to update summary log: {e}")
+
+def log_failure(input_file_path, error_message="Unknown Error"):
+    """
+    Logs a failed run to the summary table.
+    """
+    row_data = {
+        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Sample Name": Path(input_file_path).stem,
+        "Input File": str(Path(input_file_path).absolute()),
+        "Reference": "Error",
+        "Haplogroup": "FAILED",
+        "Terminal Marker": error_message[:50].replace('\n', ' '), # Truncate error
+        "QC Score": 0,
+        "Total Reads": 0,
+        "YFull Link": "",
+        "Duration (s)": 0
+    }
+
+    fieldnames = ["Date", "Sample Name", "Input File", "Reference", "Haplogroup", 
+                  "Terminal Marker", "QC Score", "Total Reads", "YFull Link", "Duration (s)"]
+
+    csv_path = get_summary_path()
+    file_exists = csv_path.exists()
+
+    try:
+        with open(csv_path, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_NONNUMERIC)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row_data)
+        print(f"Summary log updated (FAILURE): {csv_path}")
+    except Exception as e:
+        print(f"Failed to update summary log for failure: {e}")

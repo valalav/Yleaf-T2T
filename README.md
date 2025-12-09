@@ -75,6 +75,48 @@ _Note: In version 3.0 we switched to using YFull (v10.01) for the underlying tre
 
     Yleaf -bam file.bam -o bam_output --reference_genome hg19 -dh -p
 
+### Batch Processing (New in v3.2)
+
+Yleaf now includes a robust batch processing script `batch_process.py` located in the root directory. This tool is designed to handle large collections of BAM/CRAM files efficiently.
+
+**Features:**
+*   **Directory Scanning:** Recursively finds all `.bam` and `.cram` files in a folder.
+*   **Fast Fail & Auto-Healing:** Automatically checks for valid indices (`.bai`/`.crai`).
+    *   If an index is missing or invalid, it attempts to generate one using `samtools index` (with a timeout).
+    *   If indexing fails or the file is corrupted, it skips the file immediately to prevent hanging.
+*   **Summary Reporting:** Generates a `summary_table.csv` with results for all samples (Haplogroup, QC Score, Status).
+*   **Resume Capability:** Logs are saved per sample; you can re-run the script to retry failed samples or process new ones.
+
+**Usage:**
+
+```bash
+# Process all BAM/CRAM files in a directory (recursively)
+python3 batch_process.py /path/to/your/bam_folder -d -o output_directory
+
+# Process a list of files from a text file
+python3 batch_process.py file_list.txt -o output_directory
+```
+
+**Output:**
+*   `summary_table.csv`: A CSV file containing the haplogroup prediction, quality scores, and links to YFull for each processed sample.
+*   `output_directory/`: Contains individual result folders for each sample.
+
+### Optimization Recommendation (WGSExtract / Samtools)
+
+Processing full Whole Genome Sequencing (WGS) BAM files (often 30GB - 100GB+) can be slow. Yleaf only needs reads mapped to the Y chromosome.
+
+**Recommendation:** Extract the Y chromosome reads before running Yleaf. This reduces file size to ~50-200MB and reduces processing time from hours to seconds per sample.
+
+**Linux (samtools):**
+```bash
+samtools view -b input.bam chrY > input_chrY.bam
+samtools index input_chrY.bam
+```
+*Note: Check if your reference uses 'chrY' or 'Y'.*
+
+**Windows (WGSExtract):**
+If you are preparing files on Windows, use **WGSExtract** (Beta) to extract the Y chromosome into a smaller BAM file, then transfer it to your Linux environment for Yleaf.
+
 ## Additional information
 
 For a more comprehensive manual please have a look at the [yleaf_manual](yleaf_manual.pdf).

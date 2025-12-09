@@ -32,6 +32,7 @@ import datetime
 from yleaf import __version__
 from yleaf.tree import Tree
 from yleaf import yleaf_constants, download_reference, html_report, summary_logger
+from yleaf import external_tools
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -91,15 +92,17 @@ def run_vcf(
     safe_create_dir(sample_vcf_folder, args.force)
 
     sample_vcf_file_txt = sample_vcf_folder / (sample_vcf_file.name.replace(".vcf.gz", ".txt"))
-    cmd = f"bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%AD]\n' {sample_vcf_file} > {sample_vcf_file_txt}"
-    call_command(cmd)
+    external_tools.bcftools_query(
+        sample_vcf_file,
+        '%CHROM\t%POS\t%REF\t%ALT[\t%AD]\n',
+        output_file=sample_vcf_file_txt
+    )
 
     pileupfile = pd.read_csv(sample_vcf_file_txt,
                              dtype=str, header=None, sep="\t")
 
     # remove sample_vcf_file_txt
-    cmd = f"rm {sample_vcf_file_txt}"
-    call_command(cmd)
+    external_tools.safe_remove(sample_vcf_file_txt)
 
     pileupfile.columns = ['chr', 'pos', 'refbase', 'altbase', 'reads']
     pileupfile['pos'] = pileupfile['pos'].astype(int)
@@ -255,25 +258,17 @@ def main_vcf_split(
 ):
     # first sort the vcf file
     sorted_vcf_file = base_out_folder / (vcf_file.name.replace(".vcf.gz", ".sorted.vcf.gz"))
-    cmd = f"bcftools sort -O z -o {sorted_vcf_file} {vcf_file}"
     try:
-        call_command(cmd)
+        external_tools.bcftools_sort(vcf_file, sorted_vcf_file, compressed=True)
     except SystemExit:
         LOG.error(f"Failed to sort the vcf file {vcf_file.name}. Skipping...")
         return None
 
     # next index the vcf file
-    cmd = f"bcftools index -f {sorted_vcf_file}"
-    call_command(cmd)
+    external_tools.bcftools_index(sorted_vcf_file, force=True)
 
-    # get chromosome annotation using bcftools query -f '%CHROM\n' sorted.vcf.gz | uniq
-    cmd = f"bcftools query -f '%CHROM\n' {sorted_vcf_file} | uniq"
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-    stdout, stderr = process.communicate()
-    if process.returncode != 0:
-        LOG.error(f"Call: '{cmd}' failed. Reason given: '{stderr.decode('utf-8')}'")
-        raise SystemExit("Failed command execution")
-    chromosomes = stdout.decode('utf-8').strip().split("\n")
+    # get chromosome annotation using bcftools query (Python replacement for | uniq)
+    chromosomes = external_tools.bcftools_query_chromosomes(sorted_vcf_file)
     chry = [x for x in chromosomes if "y" in x.lower()]
     if len(chry) == 0:
         LOG.error("Unable to find Y-chromosome in the vcf file. Exiting...")
@@ -293,34 +288,24 @@ def main_vcf_split(
     # filter the vcf file using the reference bed file
     filtered_vcf_file = base_out_folder / "filtered_vcf_files" / (
         sorted_vcf_file.name.replace(".sorted.vcf.gz", ".filtered.vcf.gz"))
-    cmd = f"bcftools view -O z -R {new_position_bed_file} {sorted_vcf_file} > {filtered_vcf_file}"
-    call_command(cmd)
+    external_tools.bcftools_view_regions(sorted_vcf_file, filtered_vcf_file, new_position_bed_file, compressed=True)
 
-    # remover temp_position_bed.bed
-    cmd = f"rm {new_position_bed_file}"
-    call_command(cmd)
+    # remove temp_position_bed.bed
+    external_tools.safe_remove(new_position_bed_file)
 
     # remove sorted.vcf.gz and sorted.vcf.gz.csi
-    cmd = f"rm {sorted_vcf_file}"
-    call_command(cmd)
-    cmd = f"rm {sorted_vcf_file}.csi"
-    call_command(cmd)
+    external_tools.safe_remove(sorted_vcf_file)
+    external_tools.safe_remove(Path(str(sorted_vcf_file) + ".csi"))
 
-    # check number of samples in the vcf file
-    cmd = f"bcftools query -l {filtered_vcf_file} | wc -l"
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-    stdout, stderr = process.communicate()
-    if process.returncode != 0:
-        LOG.error(f"Call: '{cmd}' failed. Reason given: '{stderr.decode('utf-8')}'")
-        raise SystemExit("Failed command execution")
-    num_samples = int(stdout.decode('utf-8').strip())
+    # check number of samples in the vcf file (Python replacement for | wc -l)
+    samples = external_tools.bcftools_query_samples(filtered_vcf_file)
+    num_samples = len(samples)
 
     if num_samples > 1:
         # split the vcf file into separate files for each sample
         split_vcf_folder = base_out_folder / (vcf_file.name.replace(".vcf.gz", "_split"))
         safe_create_dir(split_vcf_folder, args.force)
-        cmd = f"bcftools +split {filtered_vcf_file} -Oz -o {split_vcf_folder}"
-        call_command(cmd)
+        external_tools.bcftools_split(filtered_vcf_file, split_vcf_folder, compressed=True)
         sample_vcf_files = get_files_with_extension(split_vcf_folder, '.vcf.gz')
     elif num_samples == 1:
         sample_vcf_files = [filtered_vcf_file]
@@ -605,6 +590,20 @@ def main_fastq(
         args: argparse.Namespace,
         out_folder: Path
 ):
+    """
+    Process FASTQ files by aligning with minimap2 and converting to BAM.
+
+    Note: This function requires minimap2 and uses shell pipes.
+    FASTQ processing is NOT supported on Windows in the current version.
+    For Windows users, please pre-process FASTQ files to BAM format using
+    a Linux/WSL environment before running Yleaf.
+    """
+    # Check Windows compatibility
+    if external_tools.IS_WINDOWS:
+        LOG.error("FASTQ processing is not supported on Windows.")
+        LOG.error("Please convert your FASTQ files to BAM format using WSL or a Linux system.")
+        raise SystemExit("FASTQ processing not available on Windows")
+
     files = get_files_with_extension(args.fastq, '.fastq')
     files += get_files_with_extension(args.fastq, '.fastq.gz')
     reference = get_reference_path(args.reference_genome, True)
@@ -687,8 +686,21 @@ def call_command(
         command_str: str,
         stdout_location: TextIO = None
 ):
-    """Call a command on the command line and make sure to exit if it fails."""
+    """
+    Call a command on the command line and make sure to exit if it fails.
+
+    Note: This function uses shell=True and is kept for backward compatibility.
+    For cross-platform code, prefer using external_tools module functions.
+
+    Warning: On Windows, shell=True requires commands to be Windows-compatible.
+    """
     LOG.debug(f"Started running the following command: {command_str}")
+
+    # Check if running on Windows
+    if external_tools.IS_WINDOWS:
+        LOG.warning("call_command() with shell=True may not work on Windows. "
+                   "Consider using external_tools module instead.")
+
     if stdout_location is None:
         process = subprocess.Popen(command_str, stderr=subprocess.PIPE, shell=True)
     else:
@@ -723,15 +735,12 @@ def detect_reference_genome(input_path: Path) -> str:
     Detects reference genome (hg19, hg38, t2t) by reading BAM/CRAM header.
     Checks chromosome lengths.
     """
-    cmd = f"samtools view -H {input_path} | grep @SQ"
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-    stdout, stderr = process.communicate()
-    
-    if process.returncode != 0:
-        LOG.warning(f"Failed to read header for auto-detection: {stderr.decode('utf-8')}")
+    try:
+        # Cross-platform replacement for: samtools view -H | grep @SQ
+        header_lines = external_tools.samtools_view_header(input_path)
+    except SystemExit:
+        LOG.warning("Failed to read header for auto-detection")
         raise ValueError("Could not read input file header.")
-
-    header_lines = stdout.decode('utf-8').splitlines()
     
     # Known lengths of chr1
     LEN_HG19 = 249250621
@@ -806,12 +815,10 @@ def samtools(
 
     if is_bam_pathfile:
         if not any([Path(str(path_file) + ".bai").exists(), Path(str(path_file).rstrip(".bam") + '.bai').exists()]):
-            cmd = "samtools index -@{} {}".format(args.threads, path_file)
-            call_command(cmd)
+            external_tools.samtools_index(path_file, threads=args.threads)
     else:
         if not any([Path(str(path_file) + ".crai").exists(), Path(str(path_file).rstrip(".cram") + '.crai').exists()]):
-            cmd = "samtools index -@{} {}".format(args.threads, path_file)
-            call_command(cmd)
+            external_tools.samtools_index(path_file, threads=args.threads)
     header, mapped, unmapped = chromosome_table(path_file, output_folder, output_folder.name)
 
     position_file = get_position_file(args.reference_genome, args.use_old, args.ancient_DNA)
@@ -840,9 +847,7 @@ def chromosome_table(
 ) -> Tuple[str, int, int]:
     output = path_folder / (file_name + '.chr')
     tmp_output = path_folder / "tmp.txt"
-    f = open(tmp_output, "w")
-    cmd = f"samtools idxstats {path_file}"
-    call_command(cmd, stdout_location=f)
+    external_tools.samtools_idxstats(path_file, tmp_output)
     df_chromosome = pd.read_csv(tmp_output, sep="\t", header=None)
 
     total_reads = sum(df_chromosome[2])
@@ -856,7 +861,6 @@ def chromosome_table(
     df_chromosome.columns = ['chr', 'reads', 'perc']
     df_chromosome.to_csv(output, index=None, sep="\t")
 
-    f.close()
     os.remove(tmp_output)
 
     if 'Y' in df_chromosome["chr"].values:
@@ -923,19 +927,15 @@ def execute_mpileup(
         reference: Union[Path, None],
         region: str = None
 ):
-    cmd = "samtools mpileup"
-    
-    # Restrict to specific region (Chromosome) for speed!
-    if region:
-        cmd += f" -r {region}"
-        
-    if bed is not None:
-        cmd += f" -l {str(bed)}"
-
-    if reference is not None:
-        cmd += f" -f {str(reference)}"
-    cmd += f" -AQ{quality_thresh}q1 {str(bam_file)} > {str(pileupfile)}"
-    call_command(cmd)
+    # Cross-platform mpileup using external_tools wrapper
+    external_tools.samtools_mpileup(
+        bam_file=bam_file,
+        output_file=pileupfile,
+        quality_thresh=int(quality_thresh),
+        bed_file=bed,
+        reference=reference,
+        region=region
+    )
 
 
 def extract_haplogroups(
@@ -1307,8 +1307,11 @@ def predict_haplogroup(
 ):
     if use_old:
         script = yleaf_constants.SRC_FOLDER / "old_predict_haplogroup.py"
-        cmd = "python {} -i {} -o {}".format(script, path_file, output)
-        call_command(cmd)
+        # Cross-platform Python script execution
+        result = external_tools.run_command(
+            [sys.executable, str(script), "-i", str(path_file), "-o", str(output)],
+            check=True
+        )
     else:
         from yleaf import predict_haplogroup
         namespace = argparse.Namespace(input=path_file, outfile=output,

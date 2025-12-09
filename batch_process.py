@@ -3,107 +3,133 @@ import subprocess
 import argparse
 from pathlib import Path
 import sys
+import shutil
 
-def check_create_index(bam_path):
+print("DEBUG: Script started", flush=True)
+
+# Add 'yleaf' to python path to import internal modules
+sys.path.append(str(Path(__file__).parent))
+from yleaf import summary_logger
+
+def check_index_fast(bam_path):
     """
-    Checks if BAM index exists. If not, creates it.
-    Returns True if index exists or was created, False on failure.
+    Quickly verifies if the index is usable using samtools idxstats.
+    Returns True if index is good, False otherwise.
+    """
+    try:
+        # 10s timeout for idxstats - it should be instant
+        subprocess.check_call(
+            ["samtools", "idxstats", str(bam_path)], 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL,
+            timeout=10
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+
+def ensure_index(bam_path):
+    """
+    Ensures a valid index exists. 
+    1. Checks if current index works (fast).
+    2. If not, attempts to re-index.
+    3. Verifies new index.
     """
     bam_path = Path(bam_path)
-    # Check for .bam.bai or .bai
-    if bam_path.with_suffix('.bam.bai').exists() or bam_path.with_suffix('.bai').exists():
-        return True
     
-    print(f"Index missing for {bam_path.name}. Indexing...")
-    try:
-        # Run samtools index
-        cmd = ["samtools", "index", str(bam_path)]
-        subprocess.check_call(cmd)
-        print(f"Index created for {bam_path.name}")
+    # 1. Fast check existing index
+    if check_index_fast(bam_path):
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to create index for {bam_path}: {e}")
+        
+    print(f"  [Index] Index missing or invalid for {bam_path.name}. Re-indexing...")
+    
+    # Delete potentially bad indices
+    for ext in ['.bam.bai', '.bai', '.cram.crai', '.crai']:
+        idx = bam_path.with_suffix(ext)
+        if idx.exists():
+            try: idx.unlink()
+            except OSError: pass
+            
+    # 2. Re-create index
+    try:
+        cmd = ["samtools", "index", str(bam_path)]
+        # We allow time for indexing (it's heavy), but we don't wait for Yleaf to hang
+        subprocess.check_call(cmd, timeout=600)
+        print(f"  [Index] Re-indexing complete.")
+    except subprocess.TimeoutExpired:
+        print(f"  [Index] Failed: Indexing timed out (>10m).")
         return False
-    except FileNotFoundError:
-        print("Error: samtools not found. Please install samtools.")
+    except subprocess.CalledProcessError:
+        print(f"  [Index] Failed: 'samtools index' returned error.")
+        return False
+        
+    # 3. Verify new index
+    if check_index_fast(bam_path):
+        return True
+    else:
+        print(f"  [Index] Failed: Index created but 'idxstats' still fails.")
         return False
 
 def run_yleaf(bam_path, output_base_dir):
-    """
-    Runs Yleaf on the BAM file.
-    """
     bam_path = Path(bam_path)
     output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Don't create output_dir here, let Yleaf do it.
+    # output_dir.mkdir(parents=True, exist_ok=True) 
     
-    log_file_path = output_dir / "full_terminal_output.log"
-    
+    # Write log outside the target dir to prevent deletion by Yleaf
+    log_file_path = output_dir.with_suffix('.log')
     print(f"--- Processing {bam_path.name} ---")
-    print(f"Logs will be saved to: {log_file_path}")
     
-    cmd = [
-        "Yleaf",
-        "-bam", str(bam_path),
-        "-o", str(output_dir)
-    ]
+    # Use sys.executable and relative path to Yleaf.py
+    cmd = [sys.executable, "Yleaf/yleaf/Yleaf.py", "-bam", str(bam_path), "-o", str(output_dir)]
     
-    def execute_process():
-        with open(log_file_path, "w") as log_file:
-            process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-            output_lines = []
-            for line in process.stdout:
-                print(line, end='')
-                log_file.write(line)
-                output_lines.append(line)
-            
-            return_code = process.wait()
-            if return_code != 0:
-                raise subprocess.CalledProcessError(return_code, cmd, output="".join(output_lines))
+    # Set PYTHONPATH so Yleaf can find its package
+    env = os.environ.copy()
+    project_root = str(Path(__file__).parent.absolute())
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
 
-    try:
-        execute_process()
-        print(f"Successfully processed {bam_path.name}\n")
+    def run_cmd_realtime():
+        print(f"  [1/2] Starting Yleaf subprocess...", end='', flush=True)
+        start_time = time.time()
+        # Safety net timeout still exists, but we rely on ensure_index to catch bad files
+        MAX_DURATION = 900 
         
-    except subprocess.CalledProcessError as e:
-        # Check if error is index related
-        err_text = e.output.lower() if e.output else ""
-        if "index" in err_text or "bgzf" in err_text or "older than" in err_text:
-            print(f"\n[Auto-Heal] Detected potential index issue for {bam_path.name}. Re-indexing...")
+        with open(log_file_path, "w") as log:
+            # Pass the modified environment
+            process = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env=env)
             
-            # Try to remove old index
-            bai = bam_path.with_suffix('.bam.bai')
-            bai2 = bam_path.with_suffix('.bai')
-            crai = bam_path.with_suffix('.cram.crai')
-            crai2 = bam_path.with_suffix('.crai')
+            while process.poll() is None:
+                time.sleep(2) 
+                if time.time() - start_time > MAX_DURATION:
+                    print(f"  [Monitor] Safety Timeout ({MAX_DURATION}s). Killing...", end='')
+                    process.kill()
+                    print(" Killed.")
+                    return -1
             
-            for idx in [bai, bai2, crai, crai2]:
-                if idx.exists():
-                    try:
-                        idx.unlink()
-                        print(f"Removed old index: {idx}")
-                    except OSError:
-                        print(f"Could not remove index: {idx} (permission?)")
+            print(" Done.")
+            return process.returncode
 
-            # Re-create index using our helper
-            if check_create_index(bam_path):
-                print(f"[Auto-Heal] Re-indexing successful. Retrying Yleaf...")
-                try:
-                    execute_process()
-                    print(f"Successfully processed {bam_path.name} (after fix)\n")
-                    return # Success
-                except subprocess.CalledProcessError:
-                    print(f"[Auto-Heal] Retry failed. File might be truly corrupted.")
-            else:
-                print(f"[Auto-Heal] Re-indexing failed.")
+    import time 
 
-        print(f"Error processing {bam_path.name}: Process exited with code {e.returncode}")
-        print(f"Check log for details: {log_file_path}\n")
+    # Run Yleaf
+    exit_code = run_cmd_realtime()
+    
+    # Move log file into output directory if it was created
+    final_log_path = output_dir / "full_terminal_output.log"
+    if output_dir.exists() and output_dir.is_dir():
+        try:
+            shutil.move(str(log_file_path), str(final_log_path))
+            log_file_path = final_log_path # Update ref for error message
+        except Exception: pass
+    
+    if exit_code == 0:
+        print(f"Successfully processed {bam_path.name}\n")
+    elif exit_code == -1:
+        print(f"Skipping {bam_path.name} due to timeout.")
+        summary_logger.log_failure(bam_path, "Skipped: Safety Timeout")
+    else:
+        print(f"Yleaf failed (code {exit_code}). See {log_file_path}")
+        summary_logger.log_failure(bam_path, f"Failed: Yleaf Error {exit_code}")
 
 def check_bam_integrity(bam_path):
     """
@@ -163,11 +189,13 @@ def main():
         # 0. Integrity Check
         if not check_bam_integrity(file_path):
             print(f"Skipping corrupted file: {file_path.name}\n")
+            summary_logger.log_failure(file_path, "Skipped: File Corrupted")
             continue
 
-        # 1. Check/Create Index
-        if not check_create_index(file_path):
-            print(f"Skipping {file_path.name} due to indexing failure.")
+        # 1. Check/Ensure Index
+        if not ensure_index(file_path):
+            print(f"Skipping {file_path.name} due to invalid/missing index.")
+            summary_logger.log_failure(file_path, "Skipped: Index Invalid")
             continue
             
         # 2. Run Yleaf
