@@ -399,6 +399,15 @@ def add_to_final_table(
     total_reads, valid_markers = process_info_file(folder / (folder.name + ".info"))
     hg, ancestral_children, qc1, qc2, qc3, total, _ = best_haplotype_scores
     if hg == "NA":
+        # Calculate total derived markers to detect low signal (e.g. female or failed sample)
+        total_derived = 0
+        for marker_linker in haplotype_dict.values():
+            total_derived += marker_linker.nr_derived
+            
+        # Threshold: conservative estimate. A male sample usually has thousands of derived markers on WGS.
+        if total_derived < 1000:
+            hg = f"Low_Y_Signal ({total_derived} SNPs)"
+
         final_table.append([folder.name, hg, "", total_reads,
                             valid_markers, total, qc1, qc2, qc3])
         return
