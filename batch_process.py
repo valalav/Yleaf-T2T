@@ -4,24 +4,58 @@ import argparse
 from pathlib import Path
 import sys
 import shutil
+import time
 
 # Add 'yleaf' to python path to import internal modules
 sys.path.append(str(Path(__file__).parent))
-from yleaf import summary_logger
-from yleaf import yleaf_constants
+from yleaf import summary_logger, yleaf_constants, external_tools
 
-def check_index_fast(bam_path):
+def detect_reference_path(bam_path):
+    """
+    Detects reference genome path (T2T, hg38, hg19) from BAM/CRAM header.
+    Returns Path object or None.
+    """
+    try:
+        # Use external_tools to get header lines safely
+        header_lines = external_tools.samtools_view_header(bam_path)
+        
+        LEN_HG19 = 249250621
+        LEN_HG38 = 248956422
+        LEN_T2T = 248387328
+        
+        for line in header_lines:
+            if "SN:chr1" in line or "SN:1" in line:
+                for part in line.split():
+                    if part.startswith("LN:"):
+                        length = int(part.split(":")[1])
+                        if length == LEN_T2T: return yleaf_constants.T2T_FULL_GENOME
+                        if length == LEN_HG38: return yleaf_constants.HG38_FULL_GENOME
+                        if length == LEN_HG19: return yleaf_constants.HG19_FULL_GENOME
+    except Exception:
+        pass
+    return None
+
+def check_index_fast(bam_path, reference_path=None):
     """
     Quickly verifies if the index is usable using samtools idxstats.
     Returns True if index is good, False otherwise.
     """
+    env = os.environ.copy()
+    
+    # For CRAM files, help samtools find the reference to avoid hanging on downloads
+    if reference_path and str(bam_path).endswith('.cram'):
+        env['SAMTOOLS_CRAM_REF'] = str(reference_path)
+        # Some versions might check REF_PATH
+        env['REF_PATH'] = str(reference_path)
+
     try:
         # 10s timeout for idxstats - it should be instant
         subprocess.check_call(
             ["samtools", "idxstats", str(bam_path)], 
             stdout=subprocess.DEVNULL, 
             stderr=subprocess.DEVNULL,
-            timeout=10
+            timeout=10,
+            env=env
         )
         return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -36,11 +70,16 @@ def ensure_index(bam_path):
     """
     bam_path = Path(bam_path)
     
+    # Detect reference (vital for CRAM)
+    ref_path = detect_reference_path(bam_path)
+    
     # 1. Fast check existing index
-    if check_index_fast(bam_path):
+    if check_index_fast(bam_path, ref_path):
         return True
         
     print(f"  [Index] Index missing or invalid for {bam_path.name}. Re-indexing...")
+    if ref_path:
+        print(f"  [Index] Using reference: {ref_path.name}")
     
     # Delete potentially bad indices
     for ext in ['.bam.bai', '.bai', '.cram.crai', '.crai']:
@@ -53,7 +92,18 @@ def ensure_index(bam_path):
             
     # 2. Re-create index
     try:
-        cmd = ["samtools", "index", str(bam_path)]
+        cmd = ["samtools", "index"]
+        
+        # Add reference for CRAM
+        if bam_path.suffix == '.cram':
+            if ref_path and ref_path.exists():
+                cmd.extend(["-T", str(ref_path)])
+            else:
+                # If no ref found for CRAM, indexing will likely fail/hang
+                print(f"  [Index] Warning: CRAM file but no reference detected/found. Indexing may fail.")
+        
+        cmd.append(str(bam_path))
+        
         # We allow time for indexing (it's heavy), but we don't wait for Yleaf to hang
         subprocess.check_call(cmd, timeout=yleaf_constants.INDEX_TIMEOUT)
         print(f"  [Index] Re-indexing complete.")
@@ -65,7 +115,7 @@ def ensure_index(bam_path):
         return False
         
     # 3. Verify new index
-    if check_index_fast(bam_path):
+    if check_index_fast(bam_path, ref_path):
         return True
     else:
         print(f"  [Index] Failed: Index created but 'idxstats' still fails.")
@@ -75,7 +125,6 @@ def run_yleaf(bam_path, output_base_dir):
     bam_path = Path(bam_path)
     output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
     # Don't create output_dir here, let Yleaf do it.
-    # output_dir.mkdir(parents=True, exist_ok=True) 
     
     # Write log outside the target dir to prevent deletion by Yleaf
     log_file_path = output_dir.with_suffix('.log')
@@ -110,8 +159,6 @@ def run_yleaf(bam_path, output_base_dir):
             print(" Done.")
             return process.returncode
 
-    import time 
-
     # Run Yleaf
     exit_code = run_cmd_realtime()
     
@@ -121,8 +168,8 @@ def run_yleaf(bam_path, output_base_dir):
         try:
             shutil.move(str(log_file_path), str(final_log_path))
             log_file_path = final_log_path  # Update ref for error message
-        except (OSError, shutil.Error) as e:
-            print(f"  [Log] Warning: Could not move log file: {e}")
+        except (OSError, shutil.Error):
+            pass
     
     if exit_code == 0:
         print(f"Successfully processed {bam_path.name}\n")
