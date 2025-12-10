@@ -43,7 +43,9 @@ main() {
                 NEED_INDEX=1
             else
                 # 3. Check Validity (idxstats)
+                SKIP_IDXSTATS=0
                 export SAMTOOLS_CRAM_REF=""
+                
                 if [ "$EXT" == "cram" ]; then
                     HEADER=$(samtools view -H "$FILE" 2>/dev/null | grep "@SQ" | head -n 1)
                     LEN=$(echo "$HEADER" | grep -o "LN:[0-9]*" | cut -d: -f2)
@@ -55,13 +57,22 @@ main() {
                     elif [ "$LEN" == "249250621" ]; then
                         export SAMTOOLS_CRAM_REF="$REF_HG19"
                     fi
+                    
+                    # CRITICAL FIX: If we cannot find the reference locally, DO NOT run idxstats.
+                    # idxstats will fail/hang without ref, causing false positive "CORRUPTED" status.
+                    if [ -z "$SAMTOOLS_CRAM_REF" ] || [ ! -f "$SAMTOOLS_CRAM_REF" ]; then
+                        echo "Status: Index exists (Skipping validation - no local ref)."
+                        SKIP_IDXSTATS=1
+                    fi
                 fi
                 
-                if ! timeout 10s samtools idxstats "$FILE" > /dev/null 2>&1; then
-                    echo "Status: Index CORRUPTED (idxstats failed)."
-                    NEED_INDEX=1
-                else
-                    echo "Status: Index OK."
+                if [ "$SKIP_IDXSTATS" -eq 0 ]; then
+                    if ! timeout 10s samtools idxstats "$FILE" > /dev/null 2>&1; then
+                        echo "Status: Index CORRUPTED (idxstats failed)."
+                        NEED_INDEX=1
+                    else
+                        echo "Status: Index OK."
+                    fi
                 fi
             fi
         fi
@@ -73,6 +84,7 @@ main() {
             [ -f "$INDEX_FILE" ] && rm "$INDEX_FILE"
             
             if [ "$EXT" == "cram" ]; then
+                 # Logic to set ref again for indexing command
                  HEADER=$(samtools view -H "$FILE" 2>/dev/null | grep "@SQ" | head -n 1)
                  LEN=$(echo "$HEADER" | grep -o "LN:[0-9]*" | cut -d: -f2)
                  
@@ -85,7 +97,7 @@ main() {
                      export SAMTOOLS_CRAM_REF="$REF_PATH"
                      echo "  -> Using reference: $REF_PATH"
                  else
-                     echo "  -> Warning: Unknown reference or file not found. Indexing may fail."
+                     echo "  -> Warning: Local reference not found. Indexing will rely on network/cache."
                  fi
             fi
 
