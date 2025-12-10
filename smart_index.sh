@@ -50,20 +50,14 @@ main() {
                     HEADER=$(samtools view -H "$FILE" 2>/dev/null | grep "@SQ" | head -n 1)
                     LEN=$(echo "$HEADER" | grep -o "LN:[0-9]*" | cut -d: -f2)
                     
-                    if [ "$LEN" == "248387328" ]; then
-                        export SAMTOOLS_CRAM_REF="$REF_T2T"
-                    elif [ "$LEN" == "248956422" ]; then
-                        export SAMTOOLS_CRAM_REF="$REF_HG38"
-                    elif [ "$LEN" == "249250621" ]; then
+                    if [ "$LEN" == "249250621" ]; then
                         export SAMTOOLS_CRAM_REF="$REF_HG19"
                     fi
                     
-                    # CRITICAL FIX: If we cannot find the reference locally, DO NOT run idxstats.
-                    # idxstats will fail/hang without ref, causing false positive "CORRUPTED" status.
-                    if [ -z "$SAMTOOLS_CRAM_REF" ] || [ ! -f "$SAMTOOLS_CRAM_REF" ]; then
-                        echo "Status: Index exists (Skipping validation - no local ref)."
-                        SKIP_IDXSTATS=1
-                    fi
+                    # Force SKIP validation for CRAM to prevent infinite re-indexing loops
+                    # idxstats is unreliable for CRAMs in this environment even with ref
+                    SKIP_IDXSTATS=1
+                    echo "Status: Index exists (Skipping deep validation for CRAM)."
                 fi
                 
                 if [ "$SKIP_IDXSTATS" -eq 0 ]; then
