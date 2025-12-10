@@ -18,8 +18,24 @@ def detect_reference_path(bam_path):
     Returns Path object or None.
     """
     try:
-        # Use external_tools to get header lines safely
-        header_lines = external_tools.samtools_view_header(bam_path)
+        # For CRAM, set all possible reference paths in env to prevent samtools
+        # from trying to download references from the internet (which causes hangs)
+        env = os.environ.copy()
+        if str(bam_path).endswith('.cram'):
+            # Set REF_PATH to include all possible reference locations
+            ref_dirs = [
+                "/home/valalav/wgs/WGSExtractv4/reference/genomes",
+            ]
+            env['REF_PATH'] = ':'.join(ref_dirs)
+
+        # Use samtools directly with timeout to prevent hangs
+        result = subprocess.run(
+            ["samtools", "view", "-H", str(bam_path)],
+            capture_output=True, text=True, timeout=30, env=env
+        )
+        if result.returncode != 0:
+            return None
+        header_lines = result.stdout.split('\n')
         
         LEN_HG19 = 249250621
         LEN_HG38 = 248956422
@@ -130,21 +146,27 @@ def run_yleaf(bam_path, output_base_dir):
     bam_path = Path(bam_path)
     # Ensure base output directory exists
     Path(output_base_dir).mkdir(parents=True, exist_ok=True)
-    
+
     output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
     # Don't create output_dir here, let Yleaf do it.
-    
+
     # Write log outside the target dir to prevent deletion by Yleaf
     log_file_path = output_dir.with_suffix('.log')
     print(f"--- Processing {bam_path.name} ---")
+
+    # Determine input type and build command accordingly
+    is_cram = bam_path.suffix.lower() == '.cram'
+
+    # Determine path to Yleaf.py relative to this script
+    script_dir = Path(__file__).resolve().parent
+    yleaf_script = script_dir / "yleaf" / "Yleaf.py"
     
-    # Use sys.executable and relative path to Yleaf.py
-    cmd = [sys.executable, "Yleaf/yleaf/Yleaf.py", "-bam", str(bam_path), "-o", str(output_dir)]
+    cmd = [sys.executable, str(yleaf_script), "-bam", str(bam_path), "-o", str(output_dir)]
     
     # Set PYTHONPATH so Yleaf can find its package
+    # batch_process.py is in Yleaf/, so we add Yleaf/ to PYTHONPATH
     env = os.environ.copy()
-    project_root = str(Path(__file__).parent.absolute())
-    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(script_dir) + os.pathsep + env.get("PYTHONPATH", "")
 
     def run_cmd_realtime():
         print(f"  [1/2] Starting Yleaf subprocess...", end='', flush=True)
