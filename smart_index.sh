@@ -67,8 +67,8 @@ main() {
                 fi
                 
                 if [ "$SKIP_IDXSTATS" -eq 0 ]; then
-                    if ! timeout 10s samtools idxstats "$FILE" > /dev/null 2>&1; then
-                        echo "Status: Index CORRUPTED (idxstats failed)."
+                    if ! timeout 60s samtools idxstats "$FILE" > /dev/null 2>&1; then
+                        echo "Status: Index CORRUPTED (idxstats failed or timed out)."
                         NEED_INDEX=1
                     else
                         echo "Status: Index OK."
