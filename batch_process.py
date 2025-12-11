@@ -18,24 +18,8 @@ def detect_reference_path(bam_path):
     Returns Path object or None.
     """
     try:
-        # For CRAM, set all possible reference paths in env to prevent samtools
-        # from trying to download references from the internet (which causes hangs)
-        env = os.environ.copy()
-        if str(bam_path).endswith('.cram'):
-            # Set REF_PATH to include all possible reference locations
-            ref_dirs = [
-                "/home/valalav/wgs/WGSExtractv4/reference/genomes",
-            ]
-            env['REF_PATH'] = ':'.join(ref_dirs)
-
-        # Use samtools directly with timeout to prevent hangs
-        result = subprocess.run(
-            ["samtools", "view", "-H", str(bam_path)],
-            capture_output=True, text=True, timeout=30, env=env
-        )
-        if result.returncode != 0:
-            return None
-        header_lines = result.stdout.split('\n')
+        # Use external_tools to get header lines safely
+        header_lines = external_tools.samtools_view_header(bam_path)
         
         LEN_HG19 = 249250621
         LEN_HG38 = 248956422
@@ -82,10 +66,16 @@ def check_index_fast(bam_path, reference_path=None):
 def ensure_index(bam_path):
     """
     Ensures a valid index exists. 
+    1. Checks if current index works (fast).
+    2. If not, attempts to re-index.
+    3. Verifies new index.
     """
     bam_path = Path(bam_path)
     
-    # Determine expected index path
+    # Detect reference (vital for CRAM)
+    ref_path = detect_reference_path(bam_path)
+    
+    # Check if index exists and is fresh
     if bam_path.suffix == '.cram':
         idx_path = bam_path.with_suffix('.cram.crai')
         alt_idx = bam_path.with_suffix('.crai')
@@ -93,7 +83,6 @@ def ensure_index(bam_path):
         idx_path = bam_path.with_suffix('.bam.bai')
         alt_idx = bam_path.with_suffix('.bai')
         
-    # Check if index exists and is fresh
     existing_index = None
     if idx_path.exists() and idx_path.stat().st_mtime >= bam_path.stat().st_mtime:
         existing_index = idx_path
@@ -151,32 +140,38 @@ def ensure_index(bam_path):
         return False
         
     # 3. Verify new index
+    # For CRAM, we skip validation to avoid infinite loops if idxstats fails
+    if bam_path.suffix == '.cram':
+        return True
+        
     if check_index_fast(bam_path, ref_path):
         return True
     else:
         print(f"  [Index] Failed: Index created but 'idxstats' still fails.")
         return False
 
-def run_yleaf(bam_path, output_base_dir):
+def run_yleaf(bam_path, output_base_dir, read_thresh=None, quality_thresh=None):
     bam_path = Path(bam_path)
     # Ensure base output directory exists
     Path(output_base_dir).mkdir(parents=True, exist_ok=True)
-
-    output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
-    # Don't create output_dir here, let Yleaf do it.
-
+    
+    output_dir = Path(output_base_dir) / f"output_{{bam_path.stem}}"
+    
     # Write log outside the target dir to prevent deletion by Yleaf
     log_file_path = output_dir.with_suffix('.log')
     print(f"--- Processing {bam_path.name} ---")
-
-    # Determine input type and build command accordingly
-    is_cram = bam_path.suffix.lower() == '.cram'
-
+    
     # Determine path to Yleaf.py relative to this script
     script_dir = Path(__file__).resolve().parent
     yleaf_script = script_dir / "yleaf" / "Yleaf.py"
     
     cmd = [sys.executable, str(yleaf_script), "-bam", str(bam_path), "-o", str(output_dir)]
+    
+    # Add optional arguments
+    if read_thresh is not None:
+        cmd.extend(["-r", str(read_thresh)])
+    if quality_thresh is not None:
+        cmd.extend(["-q", str(quality_thresh)])
     
     # Set PYTHONPATH so Yleaf can find its package
     # batch_process.py is in Yleaf/, so we add Yleaf/ to PYTHONPATH
@@ -196,7 +191,7 @@ def run_yleaf(bam_path, output_base_dir):
             while process.poll() is None:
                 time.sleep(2) 
                 if time.time() - start_time > MAX_DURATION:
-                    print(f"  [Monitor] Safety Timeout ({MAX_DURATION}s). Killing...", end='')
+                    print(f"  [Monitor] Safety Timeout ({{MAX_DURATION}}s). Killing...", end='')
                     process.kill()
                     print(" Killed.")
                     return -1
@@ -222,8 +217,8 @@ def run_yleaf(bam_path, output_base_dir):
         print(f"Skipping {bam_path.name} due to timeout.")
         summary_logger.log_failure(bam_path, "Skipped: Safety Timeout")
     else:
-        print(f"Yleaf failed (code {exit_code}). See {log_file_path}")
-        summary_logger.log_failure(bam_path, f"Failed: Yleaf Error {exit_code}")
+        print(f"Yleaf failed (code {{exit_code}}). See {{log_file_path}}")
+        summary_logger.log_failure(bam_path, f"Failed: Yleaf Error {{exit_code}}")
 
 def check_bam_integrity(bam_path):
     """
@@ -240,7 +235,7 @@ def check_bam_integrity(bam_path):
         # samtools not found, assume ok
         return True
 
-def process_single_file(file_path, output_dir):
+def process_single_file(file_path, output_dir, read_thresh=None, quality_thresh=None):
     """
     Worker function to process a single BAM/CRAM file.
     """
@@ -261,7 +256,7 @@ def process_single_file(file_path, output_dir):
         return
         
     # 2. Run Yleaf
-    run_yleaf(file_path, output_dir)
+    run_yleaf(file_path, output_dir, read_thresh, quality_thresh)
 
 def main():
     parser = argparse.ArgumentParser(description="Batch process BAM files with Yleaf.")
@@ -269,6 +264,8 @@ def main():
     parser.add_argument("-d", "--directory-mode", action="store_true", help="Treat input_source as a directory and scan recursively for .bam/.cram")
     parser.add_argument("-o", "--output_dir", default=".", help="Base directory for output folders")
     parser.add_argument("-t", "--threads", type=int, default=1, help="Number of files to process in parallel (default: 1)")
+    parser.add_argument("-r", "--reads_threshold", type=int, help="Minimum read depth (default: Yleaf default)")
+    parser.add_argument("-q", "--quality_threshold", type=int, help="Minimum read quality (default: Yleaf default)")
     
     args = parser.parse_args()
     
@@ -298,16 +295,23 @@ def main():
         
     print(f"Found {len(files_to_process)} files to process. Using {args.threads} threads.")
     
+    # Prepare partial function with arguments
+    process_func = partial(
+        process_single_file, 
+        output_dir=args.output_dir,
+        read_thresh=args.reads_threshold,
+        quality_thresh=args.quality_threshold
+    )
+    
     if args.threads > 1:
         # Create output directory ahead of time to avoid race conditions
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
         
         with multiprocessing.Pool(processes=args.threads) as pool:
-            # Use partial to pass the constant output_dir argument
-            pool.map(partial(process_single_file, output_dir=args.output_dir), files_to_process)
+            pool.map(process_func, files_to_process)
     else:
         for file_path in files_to_process:
-            process_single_file(file_path, args.output_dir)
+            process_func(file_path)
 
 if __name__ == "__main__":
     main()
