@@ -82,20 +82,35 @@ def check_index_fast(bam_path, reference_path=None):
 def ensure_index(bam_path):
     """
     Ensures a valid index exists. 
-    1. Checks if current index works (fast).
-    2. If not, attempts to re-index.
-    3. Verifies new index.
     """
     bam_path = Path(bam_path)
     
-    # Detect reference (vital for CRAM)
-    ref_path = detect_reference_path(bam_path)
-    
-    # 1. Fast check existing index
-    if check_index_fast(bam_path, ref_path):
-        return True
+    # Determine expected index path
+    if bam_path.suffix == '.cram':
+        idx_path = bam_path.with_suffix('.cram.crai')
+        alt_idx = bam_path.with_suffix('.crai')
+    else:
+        idx_path = bam_path.with_suffix('.bam.bai')
+        alt_idx = bam_path.with_suffix('.bai')
         
-    print(f"  [Index] Index missing or invalid for {bam_path.name}. Re-indexing...")
+    # Check if index exists and is fresh
+    existing_index = None
+    if idx_path.exists() and idx_path.stat().st_mtime >= bam_path.stat().st_mtime:
+        existing_index = idx_path
+    elif alt_idx.exists() and alt_idx.stat().st_mtime >= bam_path.stat().st_mtime:
+        existing_index = alt_idx
+        
+    if existing_index:
+        # If it's CRAM, trust the timestamp. Remote idxstats is flaky.
+        if bam_path.suffix == '.cram':
+            # print(f"  [Index] CRAM index found: {existing_index.name} (Skipping deep check)")
+            return True
+        
+        # For BAM, fast check is cheap and reliable
+        if check_index_fast(bam_path):
+            return True
+        
+    print(f"  [Index] Index missing, outdated, or invalid for {bam_path.name}. Re-indexing...")
     if ref_path:
         print(f"  [Index] Using reference: {ref_path.name}")
     

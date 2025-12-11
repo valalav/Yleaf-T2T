@@ -95,17 +95,20 @@ Yleaf now includes a robust batch processing script `batch_process.py` located i
 
 **Features:**
 *   **Directory Scanning:** Recursively finds all `.bam` and `.cram` files in a folder.
+*   **Multi-threading:** Process multiple files in parallel using the `-t` argument.
 *   **Fast Fail & Auto-Healing:** Automatically checks for valid indices (`.bai`/`.crai`).
     *   If an index is missing or invalid, it attempts to generate one using `samtools index` (with a timeout).
     *   If indexing fails or the file is corrupted, it skips the file immediately to prevent hanging.
+    *   Supports auto-detection of CRAM references to prevent hangs on older samtools versions.
+*   **Improved Reporting:** Detects samples with very low Y-DNA coverage/quality (e.g., female samples) and flags them as `Low_Y_Signal` instead of generic failure.
 *   **Summary Reporting:** Generates a `summary_table.csv` with results for all samples (Haplogroup, QC Score, Status).
 *   **Resume Capability:** Logs are saved per sample; you can re-run the script to retry failed samples or process new ones.
 
 **Usage:**
 
 ```bash
-# Process all BAM/CRAM files in a directory (recursively)
-python3 batch_process.py /path/to/your/bam_folder -d -o output_directory
+# Process all BAM/CRAM files in a directory (recursively) with 16 threads
+python3 batch_process.py /path/to/your/bam_folder -d -o output_directory -t 16
 
 # Process a list of files from a text file
 python3 batch_process.py file_list.txt -o output_directory
@@ -114,6 +117,19 @@ python3 batch_process.py file_list.txt -o output_directory
 **Output:**
 *   `summary_table.csv`: A CSV file containing the haplogroup prediction, quality scores, and links to YFull for each processed sample.
 *   `output_directory/`: Contains individual result folders for each sample.
+
+### NAS / Docker Indexing Helper (`smart_index.sh`)
+
+If your data is stored on a NAS (e.g., TrueNAS Scale) or remote server, indexing files over the network (SMB/NFS) can be slow. Use the `smart_index.sh` script to fix indices directly on the storage server.
+
+1.  Copy `smart_index.sh` to your data folder on the NAS.
+2.  Edit the reference genome paths in the script (`REF_T2T`, etc.) to match the NAS file structure.
+3.  Run it inside the NAS shell/container:
+    ```bash
+    chmod +x smart_index.sh
+    ./smart_index.sh .
+    ```
+4.  Once finished, run `batch_process.py` on your PC. It will detect the valid indices and skip re-indexing.
 
 ### Optimization Recommendation (WGSExtract / Samtools)
 
