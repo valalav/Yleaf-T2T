@@ -4,6 +4,7 @@
 
 *   **Original Authors:** Arwin Ralf, Diego Montiel Gonzalez, Kaiyin Zhong, Manfred Kayser (Erasmus MC)
 *   **Enhanced By:** [Your Name/Organization]
+*   **Changelog:** See [CHANGELOG.md](CHANGELOG.md) for detailed history.
 *   **Key Features:** 
     *   **Batch Processing:** Process hundreds of BAM/CRAM files automatically (`batch_process.py`).
     *   **Fast Fail:** Automatically detects and skips corrupted files or broken indices without hanging.
@@ -170,4 +171,28 @@ If you have a bug to report or a question about installation consider sending an
 A. Ralf, et al., Yleaf: software for human Y-chromosomal haplogroup inference from next generation sequencing data (2018).
 
 https://academic.oup.com/mbe/article/35/5/1291/4922696
+
+---
+
+## Troubleshooting Guide
+
+### 1. Results are too shallow (e.g., stopping at G-CTS796*)
+*   **Cause 1:** Low read coverage for deeper markers.
+    *   **Fix:** Use `-r 2` argument (default in v3.2.1). Check `.info` file for "Markers below read threshold".
+*   **Cause 2:** Noisy reads rejected by strict filters.
+    *   **Fix:** Check `.fmf` file for "Below base majority". Lower `DEFAULT_MAJORITY_THRESHOLD` in `yleaf_constants.py` (default 75%).
+*   **Cause 3:** Database blocker (False Negative marker).
+    *   **Fix:** If a known marker shows "Ancestral" state incorrectly in `.out` file, it stops the tree traversal. Remove the problematic marker from `new_positions.txt`. (Example: `G-PF3346` was removed in v3.2.1).
+
+### 2. CRAM files are skipped ("Index Invalid")
+*   **Cause:** `samtools` cannot read the CRAM header because the reference genome path is incorrect or inaccessible over the network.
+*   **Fix:**
+    1.  Verify paths in `config.txt`.
+    2.  Run `smart_index.sh` directly on the NAS to fix indices locally.
+    3.  Upgrade `samtools` to 1.10+ (although batch_process.py handles older versions via env vars).
+
+### 3. Result is "Low_Y_Signal"
+*   **Cause:** The sample has fewer than 1000 derived markers on the Y chromosome.
+*   **Meaning:** Likely a female sample (XX) or failed sequencing run with very low Y coverage.
+
 
