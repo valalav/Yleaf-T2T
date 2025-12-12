@@ -158,7 +158,8 @@ def run_yleaf(bam_path, output_base_dir, read_thresh=None, quality_thresh=None):
     output_dir = Path(output_base_dir) / f"output_{{bam_path.stem}}"
     
     # Write log outside the target dir to prevent deletion by Yleaf
-    log_file_path = output_dir.with_suffix('.log')
+    log_file_path = output_dir.with_suffix('.console.log')
+    
     print(f"--- Processing {bam_path.name} ---")
     
     # Determine path to Yleaf.py relative to this script
@@ -202,14 +203,7 @@ def run_yleaf(bam_path, output_base_dir, read_thresh=None, quality_thresh=None):
     # Run Yleaf
     exit_code = run_cmd_realtime()
     
-    # Move log file into output directory if it was created
-    final_log_path = output_dir / "full_terminal_output.log"
-    if output_dir.exists() and output_dir.is_dir():
-        try:
-            shutil.move(str(log_file_path), str(final_log_path))
-            log_file_path = final_log_path  # Update ref for error message
-        except (OSError, shutil.Error):
-            pass
+    # We do NOT move the log file. It stays as .console.log next to the folder.
     
     if exit_code == 0:
         print(f"Successfully processed {bam_path.name}\n")
@@ -217,8 +211,8 @@ def run_yleaf(bam_path, output_base_dir, read_thresh=None, quality_thresh=None):
         print(f"Skipping {bam_path.name} due to timeout.")
         summary_logger.log_failure(bam_path, "Skipped: Safety Timeout")
     else:
-        print(f"Yleaf failed (code {{exit_code}}). See {{log_file_path}}")
-        summary_logger.log_failure(bam_path, f"Failed: Yleaf Error {{exit_code}}")
+        print(f"Yleaf failed (code {exit_code}). See {log_file_path}")
+        summary_logger.log_failure(bam_path, f"Failed: Yleaf Error {exit_code}")
 
 def check_bam_integrity(bam_path):
     """
