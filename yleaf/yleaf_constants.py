@@ -234,7 +234,7 @@ graphviz_path =
 # =============================================================================
 
 # Read filtering thresholds (used in Yleaf.py)
-DEFAULT_READ_THRESHOLD: int = 10  # Minimum number of reads for each base
+DEFAULT_READ_THRESHOLD: int = 2  # Minimum number of reads for each base (Lowered to 2 for WGS)
 DEFAULT_QUALITY_THRESHOLD: int = 20  # Minimum quality for each read [10-40]
 DEFAULT_MAJORITY_THRESHOLD: int = 90  # Base majority percentage [50-99]
 
