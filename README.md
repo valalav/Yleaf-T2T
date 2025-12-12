@@ -147,6 +147,17 @@ samtools index input_chrY.bam
 **Windows (WGSExtract):**
 If you are preparing files on Windows, use **WGSExtract** (Beta) to extract the Y chromosome into a smaller BAM file, then transfer it to your Linux environment for Yleaf.
 
+### Known Issues & Modifications (v3.2 Enhanced)
+
+1.  **Marker G-PF3346 Removal:**
+    *   The marker `G-PF3346` (pos 23141720 in T2T) has been observed to show ancestral state (False Negative) in some high-quality WGS samples, blocking detection of deeper clades like `G-L1264`.
+    *   **Action:** This marker was removed from `yleaf/data/t2t/new_positions.txt`.
+    *   **Note:** If updating the database, ensure this marker remains excluded or verified.
+
+2.  **Base Majority Threshold:**
+    *   The default `base_majority` threshold has been lowered from **90% to 75%**.
+    *   **Reason:** WGS data often has moderate coverage (e.g. 8x). A single sequencing error (1 vs 7 reads = 87.5%) would previously cause valid markers to be rejected. 75% allows for 1 error in 4 reads.
+
 ## Additional information
 
 For a more comprehensive manual please have a look at the [yleaf_manual](yleaf_manual.pdf).

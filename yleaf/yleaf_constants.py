@@ -236,7 +236,7 @@ graphviz_path =
 # Read filtering thresholds (used in Yleaf.py)
 DEFAULT_READ_THRESHOLD: int = 2  # Minimum number of reads for each base (Lowered to 2 for WGS)
 DEFAULT_QUALITY_THRESHOLD: int = 20  # Minimum quality for each read [10-40]
-DEFAULT_MAJORITY_THRESHOLD: int = 90  # Base majority percentage [50-99]
+DEFAULT_MAJORITY_THRESHOLD: int = 75  # Base majority percentage [50-99] (Lowered to 75 for noisy WGS)
 
 # Haplogroup prediction thresholds (used in predict_haplogroup.py)
 DEFAULT_MIN_SCORE: float = 0.95  # Minimum QC score for prediction inclusion
