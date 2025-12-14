@@ -155,7 +155,7 @@ def run_yleaf(bam_path, output_base_dir, read_thresh=None, quality_thresh=None):
     # Ensure base output directory exists
     Path(output_base_dir).mkdir(parents=True, exist_ok=True)
     
-    output_dir = Path(output_base_dir) / f"output_{{bam_path.stem}}"
+    output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
     
     # Write log outside the target dir to prevent deletion by Yleaf
     log_file_path = output_dir.with_suffix('.console.log')
