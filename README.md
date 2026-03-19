@@ -90,34 +90,44 @@ _Note: In version 3.0 we switched to using YFull (v10.01) for the underlying tre
 
     Yleaf -bam file.bam -o bam_output --reference_genome hg19 -dh -p
 
-### Batch Processing (New in v3.2)
+### 🚀 Быстрый старт для коллег (Quick Start)
 
-Yleaf now includes a robust batch processing script `batch_process.py` located in the root directory. This tool is designed to handle large collections of BAM/CRAM files efficiently.
+Наш форк Yleaf (v3.2+) оптимизирован для стабильной пакетной (batch) обработки с использованием T2T-референсов и защитой от зависаний (Auto-Healing индексов). 
 
-**Features:**
-*   **Directory Scanning:** Recursively finds all `.bam` and `.cram` files in a folder.
-*   **Multi-threading:** Process multiple files in parallel using the `-t` argument.
-*   **Fast Fail & Auto-Healing:** Automatically checks for valid indices (`.bai`/`.crai`).
-    *   If an index is missing or invalid, it attempts to generate one using `samtools index` (with a timeout).
-    *   If indexing fails or the file is corrupted, it skips the file immediately to prevent hanging.
-    *   Supports auto-detection of CRAM references to prevent hangs on older samtools versions.
-*   **Improved Reporting:** Detects samples with very low Y-DNA coverage/quality (e.g., female samples) and flags them as `Low_Y_Signal` instead of generic failure.
-*   **Summary Reporting:** Generates a `summary_table.csv` with results for all samples (Haplogroup, QC Score, Status).
-*   **Resume Capability:** Logs are saved per sample; you can re-run the script to retry failed samples or process new ones.
+Для запуска вам потребуются список ваших BAM/CRAM файлов и скрипт автономной обработки в фоне.
 
-**Usage:**
-
-```bash
-# Process all BAM/CRAM files in a directory (recursively) with 16 threads
-python3 batch_process.py /path/to/your/bam_folder -d -o output_directory -t 16
-
-# Process a list of files from a text file
-python3 batch_process.py file_list.txt -o output_directory
+**1. Подготовьте список файлов:**
+Создайте обычный текстовый файл `input_list.txt`, в котором на каждой строке будет прописан полный (абсолютный) путь к BAM/CRAM файлу.
+```text
+/mnt/data/wgs/sample1_chrYM.bam
+/mnt/data/wgs/sample2.cram
+/mnt/data/wgs/sample3.bam
 ```
 
-**Output:**
-*   `summary_table.csv`: A CSV file containing the haplogroup prediction, quality scores, and links to YFull for each processed sample.
-*   `output_directory/`: Contains individual result folders for each sample.
+**2. Используйте скрипт-оболочку для стабильного фонового запуска:**
+Так как процесс может занять много времени, рекомендуется запускать Yleaf через `nohup`. Создайте файл `run_yleaf.sh`:
+```bash
+#!/bin/bash
+# Скрипт-обертка для запуска Yleaf в фоне
+
+INPUT_FILE="/абсолютный/путь/до/вашего/input_list.txt"
+OUTPUT_DIR="/абсолютный/путь/до/папки_с_результатами"
+THREADS=4 # Количество одновременных процессов
+
+echo "Запуск пакетной обработки Yleaf..."
+# Вставьте правильный путь к python окружения Yleaf и самому скрипту batch_process.py 
+nohup python3 batch_process.py "$INPUT_FILE" -o "$OUTPUT_DIR" -t $THREADS >> yleaf_batch_run.log 2>&1 &
+
+echo "Yleaf запущен в фоне с PID $!"
+echo "Для мониторинга используйте: tail -f yleaf_batch_run.log"
+```
+
+**3. Анализ отчета:**
+После запуска скрипт `batch_process.py` автоматически просканирует индексы, попробует починить битые (через `samtools index`), пропустит непригодные и выдаст результат в `$OUTPUT_DIR/summary_table.csv` с предсказанными гаплогруппами и ссылками на дерево YFull. Образцы с низким покрытием по Y-хромосоме (например, женские) будут отмечены как `Low_Y_Signal`.
+
+> [!TIP]
+> **Оптимизация:** Анализировать полные WGS-файлы (по 30-100GB) очень долго. Перед запуском извлеките chrY/chrYM из WGS-файла через команды:
+> `samtools view -b input.bam chrY > input_chrY.bam && samtools index input_chrY.bam`
 
 ### NAS / Docker Indexing Helper (`smart_index.sh`)
 
