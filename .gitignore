@@ -27,3 +27,8 @@ results/
 full_terminal_output.log
 wgs_full_run.log
 
+
+# Large data files (generate with: node prepare_ftdna_data.js)
+yleaf/data/ftdna_tree.json
+yleaf/data/yfull_snp_index.json
+reports/
