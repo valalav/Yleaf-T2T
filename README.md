@@ -1,11 +1,12 @@
-# Yleaf v3.2 (Enhanced Batch Processing & T2T Support)
+# Yleaf v3.2-T2T (Enhanced Batch Processing, T2T & FTDNA Deepening)
 
-**This is a modified version of Yleaf featuring robust batch processing, T2T reference support, and crash protection.**
+**Modified Yleaf with batch processing, T2T support, crash protection, and FTDNA haplogroup deepening.**
 
 *   **Original Authors:** Arwin Ralf, Diego Montiel Gonzalez, Kaiyin Zhong, Manfred Kayser (Erasmus MC)
-*   **Enhanced By:** [Your Name/Organization]
+*   **Enhanced By:** valalav
 *   **Changelog:** See [CHANGELOG.md](CHANGELOG.md) for detailed history.
-*   **Key Features:** 
+*   **Key Features:**
+    *   🧬 **FTDNA Deepening:** Predict deeper Y-haplogroup sub-branches using FTDNA tree (768K+ SNPs) → [details](DEEPENING_README.md)
     *   **Batch Processing:** Process hundreds of BAM/CRAM files automatically (`batch_process.py`).
     *   **Fast Fail:** Automatically detects and skips corrupted files or broken indices without hanging.
     *   **Auto-Healing:** Attempts to fix missing or outdated indices (`samtools index`) on the fly.
@@ -145,6 +146,30 @@ python3 update_yfull_tree.py
 > [!TIP]
 > **Оптимизация:** Анализировать полные WGS-файлы (по 30-100GB) очень долго. Перед запуском извлеките chrY/chrYM из WGS-файла через команды:
 > `samtools view -b input.bam chrY > input_chrY.bam && samtools index input_chrY.bam`
+
+### 🧬 FTDNA Deepening (NEW)
+
+After Yleaf predicts a haplogroup, the deepening module walks the [FTDNA Y-DNA Haplotree](https://www.familytreedna.com/public/y-dna-haplotree) to find deeper sub-branches. Typical gain: **+5 to +15 levels**.
+
+```bash
+# End-to-end: VCF/BAM → Yleaf → FTDNA deepening → reports
+bash deepen.sh /path/to/sample.vcf.gz
+bash deepen.sh /path/to/sample.bam
+
+# Batch mode
+bash deepen.sh --batch /path/to/vcf_dir/
+```
+
+**Output:** Console + per-sample HTML (clickable FTDNA/YFull links) + TXT + batch CSV.
+
+| Input | Time | Depth gain |
+|-------|------|------------|
+| VCF | **~0.1s** | +5 to +15 |
+| BAM | **~16s** | +5 to +15 |
+
+📄 Full documentation: [DEEPENING_README.md](DEEPENING_README.md)
+
+---
 
 ### NAS / Docker Indexing Helper (`smart_index.sh`)
 
