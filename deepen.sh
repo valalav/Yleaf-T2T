@@ -20,7 +20,9 @@ REPORTS_DIR="$YLEAF_DIR/reports"
 
 # Load ref from config
 REF=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$SCRIPT_DIR/deepen_config.json','utf8'));console.log(c.reference_genome.hg38||'')}catch(e){}" 2>/dev/null)
-[ -z "$REF" ] && REF="/mnt/truenas-data/Data/DNA/wgs/genomes/hg38.fa"
+
+# Create directories
+mkdir -p "$RESULTS_DIR" "$REPORTS_DIR"
 
 usage() {
     echo "Usage:"
@@ -80,6 +82,7 @@ done
 if [ -z "$PRED_FILE" ]; then
     echo "Running Yleaf..."
     OUTPUT_DIR="$RESULTS_DIR/output_${BASENAME}"
+    mkdir -p "$OUTPUT_DIR"
     export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
     cd "$YLEAF_DIR"
     python3 "$YLEAF_PY" -bam "$INPUT" -o "$OUTPUT_DIR" 2>&1 | tail -3
@@ -104,6 +107,11 @@ fi
 echo "=== Deepening with FTDNA ==="
 EXT_LOW=$(echo "$INPUT" | tr '[:upper:]' '[:lower:]')
 if echo "$EXT_LOW" | grep -qE '\.(bam|cram)$'; then
+    if [ -z "$REF" ]; then
+        echo "ERROR: BAM/CRAM requires a reference genome."
+        echo "Set reference_genome.hg38 in deepen_config.json"
+        exit 1
+    fi
     node "$DEEPEN_JS" -i "$INPUT" --ref "$REF" --hg "$HG" -v
 else
     node "$DEEPEN_JS" -i "$INPUT" --hg "$HG" -v

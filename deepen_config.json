@@ -1,8 +1,8 @@
 {
   "reference_genome": {
-    "hg38": "/mnt/truenas-data/Data/DNA/wgs/genomes/hg38.fa",
+    "hg38": null,
     "hg19": null,
-    "t2t": "/mnt/truenas-data/Data/DNA/wgs/genomes/chm13v2.0.fa",
+    "t2t": null,
     "download_urls": {
       "hg38": "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz",
       "hg19": "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/hg19.fa.gz",
@@ -10,8 +10,8 @@
     }
   },
   "ftdna_data": {
-    "get_json": "/home/valalav/_dna/ystr-matcher/ftdna_haplo/data/get.json",
-    "ytree_json": "/home/valalav/_dna/ystr-matcher/ftdna_haplo/data/ytree.json",
+    "get_json": null,
+    "ytree_json": null,
     "ftdna_tree": "yleaf/data/ftdna_tree.json",
     "yfull_snp_index": "yleaf/data/yfull_snp_index.json"
   },
