@@ -13,7 +13,12 @@ Autor: Bram van Wersch
 
 
 import json
+import sys
 from typing import TYPE_CHECKING, Dict, List, Union
+
+# Enriched trees (FTDNA + YFull) can have 190K+ nodes,
+# exceeding Python's default recursion limit of 1000.
+sys.setrecursionlimit(500000)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,15 +56,28 @@ class Tree:
         tree_dict: Dict[str, List[str]],
         node: "Node", depth: int
     ):
-        """Function for recursively reading a dictionary keyed on node names with child nodes as values"""
-        depth += 1
-        for node_name in tree_dict[node.name]:
-            children = []
-            if node_name in tree_dict:
-                children = tree_dict[node_name]
-            new_node = Node(node_name, node, depth, children)
-            self.node_mapping[node_name] = new_node
-            self._recursive_read(tree_dict, new_node, depth)
+        """Iterative (stack-based) tree construction. Handles large trees and breaks cycles."""
+        stack = [(node, depth)]
+        visited = {node.name}
+
+        while stack:
+            current_node, current_depth = stack.pop()
+            next_depth = current_depth + 1
+
+            if current_node.name not in tree_dict:
+                continue
+
+            for node_name in tree_dict[current_node.name]:
+                if node_name in visited:
+                    continue  # Skip cycles and already-visited nodes
+                visited.add(node_name)
+
+                children = []
+                if node_name in tree_dict:
+                    children = tree_dict[node_name]
+                new_node = Node(node_name, current_node, next_depth, children)
+                self.node_mapping[node_name] = new_node
+                stack.append((new_node, next_depth))
 
     def get(
         self,

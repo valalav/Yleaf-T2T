@@ -131,10 +131,49 @@ def convert_ybrowse_vcf_gz(vcf_path, snp_to_hg_map, output_txt_path):
             
     print(f"Written (T2T): {count_written}, Skipped: {count_skipped}", flush=True)
 
+def normalize_ybrowse_haplogroup(raw_hg):
+    """
+    Normalize YBrowse YCC_haplogroup to Yleaf-compatible format.
+    Examples:
+      'R-P312' -> 'R-P312'
+      'R1b'    -> 'R1b'
+      'R1b-P312 (not listed)' -> 'R-P312' (strip parenthetical)
+      'unknown' -> None
+      'not listed' -> None
+    """
+    if not raw_hg:
+        return None
+    raw_hg = raw_hg.strip().strip('"')
+    
+    # Skip useless values
+    if raw_hg.lower() in ('unknown', 'not listed', '.', ''):
+        return None
+    
+    # Remove parenthetical annotations: "R1b-DF21 (not listed)" -> "R1b-DF21"
+    if '(' in raw_hg:
+        raw_hg = raw_hg[:raw_hg.index('(')].strip()
+    
+    # After stripping, check again
+    if not raw_hg or raw_hg.lower() in ('unknown', 'not listed'):
+        return None
+    
+    return raw_hg
+
+
 def convert_ybrowse_csv(csv_path, snp_to_hg_map, output_txt_path):
+    """
+    Process YBrowse hg38 CSV with dual mapping:
+    1. Primary: YFull tree SNP->haplogroup map (precise)
+    2. Fallback: YBrowse's own YCC_haplogroup column (broader coverage)
+    
+    Returns set of new haplogroup names found via fallback (for tree enrichment).
+    """
     print(f"Processing CSV {csv_path} -> {output_txt_path}", flush=True)
-    count_written = 0
+    count_yfull = 0
+    count_ybrowse = 0
     count_skipped = 0
+    new_haplogroups = set()  # haplogroups from YBrowse not in YFull tree
+    seen_positions = set()   # dedup by position
     
     with open(csv_path, 'r', encoding='utf-8') as f_in, open(output_txt_path, 'w', encoding='utf-8') as f_out:
         reader = csv.DictReader(f_in)
@@ -144,31 +183,67 @@ def convert_ybrowse_csv(csv_path, snp_to_hg_map, output_txt_path):
             # Columns: Name, ID, allele_anc, allele_der, start
             snp_name = row.get('name') or row.get('id')
             if not snp_name: continue
-            
-            found_hg = snp_to_hg_map.get(snp_name)
-            if not found_hg:
-                count_skipped += 1
-                continue
+            snp_name = snp_name.strip().strip('"')
             
             pos = row.get('start') or row.get('position')
             if not pos: continue
+            pos = pos.strip().strip('"')
+            
+            # Dedup by SNP name + position
+            key = f"{snp_name}_{pos}"
+            if key in seen_positions:
+                continue
+            seen_positions.add(key)
             
             # allele_anc / allele_der for hg38 YBrowse
             ref = row.get('allele_anc') or row.get('ref')
             alt = row.get('allele_der') or row.get('alt')
-            
             if not ref or not alt: continue
+            ref = ref.strip().strip('"')
+            alt = alt.strip().strip('"')
+            
+            # Skip non-standard alleles (insertions, deletions, complex)
+            if len(ref) > 1 or len(alt) > 1:
+                continue
+            if ref not in 'ACGT' or alt not in 'ACGT':
+                continue
+            
+            # === Dual mapping ===
+            # Primary: YFull tree map (precise haplogroup names)
+            found_hg = snp_to_hg_map.get(snp_name)
+            source = 'yfull'
+            
+            # Fallback: YBrowse's own YCC_haplogroup
+            if not found_hg:
+                ycc_hg = row.get('ycc_haplogroup', '')
+                found_hg = normalize_ybrowse_haplogroup(ycc_hg)
+                if found_hg:
+                    source = 'ybrowse'
+                    new_haplogroups.add(found_hg)
+            
+            if not found_hg:
+                count_skipped += 1
+                continue
             
             mutation = f"{ref}->{alt}"
             chrom = "chry"
             f_out.write(f"{chrom}\t{snp_name}\t{found_hg}\t{pos}\t{mutation}\t{ref}\t{alt}\n")
-            count_written += 1
             
-    print(f"Written (hg38): {count_written}, Skipped: {count_skipped}", flush=True)
+            if source == 'yfull':
+                count_yfull += 1
+            else:
+                count_ybrowse += 1
+            
+    total = count_yfull + count_ybrowse
+    print(f"Written (hg38): {total} total ({count_yfull} YFull + {count_ybrowse} YBrowse fallback), Skipped: {count_skipped}", flush=True)
+    print(f"New haplogroups from YBrowse: {len(new_haplogroups)}", flush=True)
+    return new_haplogroups
+
 
 def main():
-    base_dir = Path("Yleaf/yleaf/data")
-    temp_dir = Path("temp_update")
+    script_dir = Path(__file__).parent  # yleaf/
+    base_dir = script_dir / "data"
+    temp_dir = script_dir.parent / "temp_update"
     temp_dir.mkdir(exist_ok=True)
     
     # 1. YFull Tree
@@ -216,17 +291,76 @@ def main():
         t2t_out_dir.mkdir(parents=True, exist_ok=True)
         convert_ybrowse_vcf_gz(t2t_vcf_path, snp_map, t2t_out_dir / "new_positions.txt")
     
-    # 3. hg38 Update (CSV)
+    # 4. hg38 Update (CSV) — with YBrowse fallback for deeper predictions
     hg38_csv_path = temp_dir / "hg38_snps.csv"
+    # Always re-download for fresh data (updated weekly)
     if not hg38_csv_path.exists():
         download_file(YBROWSE_HG38_URL, hg38_csv_path)
     
     if hg38_csv_path.exists():
         hg38_out_dir = base_dir / "hg38"
         hg38_out_dir.mkdir(parents=True, exist_ok=True)
-        convert_ybrowse_csv(hg38_csv_path, snp_map, hg38_out_dir / "new_positions.txt")
+        new_hgs = convert_ybrowse_csv(hg38_csv_path, snp_map, hg38_out_dir / "new_positions.txt")
+        
+        # 5. Enrich tree.json with new haplogroups from YBrowse
+        if new_hgs:
+            enriched = 0
+            for hg_name in new_hgs:
+                if hg_name in yleaf_tree_dict:
+                    continue  # already in tree
+                
+                # Determine parent: base letter (G, J, R, etc.)
+                # For "G-Z31275" -> parent is "G"
+                # For "R1b" -> parent is "R1"
+                # For "R-P312" -> parent is "R"
+                base = hg_name[0] if hg_name[0].isalpha() else None
+                if not base:
+                    continue
+                
+                # Find best parent in tree
+                parent_found = False
+                if '-' in hg_name:
+                    # Deep haplogroup like G-Z31275
+                    base_group = hg_name.split('-')[0]  # "G" from "G-Z31275"
+                    # Try exact base group first, then just the letter
+                    for candidate in [base_group, base]:
+                        if candidate in yleaf_tree_dict:
+                            if hg_name not in yleaf_tree_dict[candidate]:
+                                yleaf_tree_dict[candidate].append(hg_name)
+                            yleaf_tree_dict[hg_name] = []  # leaf node
+                            parent_found = True
+                            enriched += 1
+                            break
+                else:
+                    # Shallow like "R1b" — try parent "R1", then "R"
+                    for i in range(len(hg_name) - 1, 0, -1):
+                        candidate = hg_name[:i]
+                        if candidate in yleaf_tree_dict:
+                            if hg_name not in yleaf_tree_dict[candidate]:
+                                yleaf_tree_dict[candidate].append(hg_name)
+                            yleaf_tree_dict[hg_name] = []
+                            parent_found = True
+                            enriched += 1
+                            break
+                
+                if not parent_found:
+                    # Add under ROOT as last resort
+                    root_key = 'ROOT (Y-Chromosome "Adam")'
+                    if root_key in yleaf_tree_dict:
+                        if hg_name not in yleaf_tree_dict[root_key]:
+                            yleaf_tree_dict[root_key].append(hg_name)
+                        yleaf_tree_dict[hg_name] = []
+                        enriched += 1
+            
+            print(f"Enriched tree with {enriched} new haplogroups from YBrowse.", flush=True)
+            
+            # Re-save enriched tree
+            with open(tree_out_path, 'w', encoding='utf-8') as f:
+                json.dump(yleaf_tree_dict, f, indent=4)
+            print(f"Tree nodes total: {len(yleaf_tree_dict)}", flush=True)
         
     print("Update complete.", flush=True)
 
 if __name__ == "__main__":
     main()
+

@@ -407,19 +407,32 @@ def main_vcf_split(
         - Writes sorted and filtered VCF files
         - Processes each sample and writes haplogroup results
     """
-    # first sort the vcf file
-    sorted_vcf_file = base_out_folder / (vcf_file.name.replace(".vcf.gz", ".sorted.vcf.gz"))
-    try:
-        external_tools.bcftools_sort(vcf_file, sorted_vcf_file, compressed=True)
-    except SystemExit:
-        LOG.error(f"Failed to sort the vcf file {vcf_file.name}. Skipping...")
-        return None
+    # Check if input VCF already has a tabix (.tbi) or CSI (.csi) index
+    tbi_index = Path(str(vcf_file) + ".tbi")
+    csi_index = Path(str(vcf_file) + ".csi")
+    has_index = tbi_index.exists() or csi_index.exists()
 
-    # next index the vcf file
-    external_tools.bcftools_index(sorted_vcf_file, force=True)
+    if has_index:
+        # Skip expensive sort + index — use input directly
+        LOG.info(f"VCF index found, skipping sort for {vcf_file.name}")
+        source_vcf = vcf_file
+        needs_cleanup = False
+    else:
+        # No index — sort and index as before
+        sorted_vcf_file = base_out_folder / (vcf_file.name.replace(".vcf.gz", ".sorted.vcf.gz"))
+        try:
+            external_tools.bcftools_sort(vcf_file, sorted_vcf_file, compressed=True)
+        except SystemExit:
+            LOG.error(f"Failed to sort the vcf file {vcf_file.name}. Skipping...")
+            return None
+
+        # next index the vcf file
+        external_tools.bcftools_index(sorted_vcf_file, force=True)
+        source_vcf = sorted_vcf_file
+        needs_cleanup = True
 
     # get chromosome annotation using bcftools query (Python replacement for | uniq)
-    chromosomes = external_tools.bcftools_query_chromosomes(sorted_vcf_file)
+    chromosomes = external_tools.bcftools_query_chromosomes(source_vcf)
     chry = [x for x in chromosomes if "y" in x.lower()]
     if len(chry) == 0:
         LOG.error("Unable to find Y-chromosome in the vcf file. Exiting...")
@@ -438,15 +451,16 @@ def main_vcf_split(
 
     # filter the vcf file using the reference bed file
     filtered_vcf_file = base_out_folder / "filtered_vcf_files" / (
-        sorted_vcf_file.name.replace(".sorted.vcf.gz", ".filtered.vcf.gz"))
-    external_tools.bcftools_view_regions(sorted_vcf_file, filtered_vcf_file, new_position_bed_file, compressed=True)
+        vcf_file.name.replace(".vcf.gz", ".filtered.vcf.gz"))
+    external_tools.bcftools_view_regions(source_vcf, filtered_vcf_file, new_position_bed_file, compressed=True)
 
     # remove temp_position_bed.bed
     external_tools.safe_remove(new_position_bed_file)
 
-    # remove sorted.vcf.gz and sorted.vcf.gz.csi
-    external_tools.safe_remove(sorted_vcf_file)
-    external_tools.safe_remove(Path(str(sorted_vcf_file) + ".csi"))
+    # remove sorted.vcf.gz and sorted.vcf.gz.csi (only if we created them)
+    if needs_cleanup:
+        external_tools.safe_remove(source_vcf)
+        external_tools.safe_remove(Path(str(source_vcf) + ".csi"))
 
     # check number of samples in the vcf file (Python replacement for | wc -l)
     samples = external_tools.bcftools_query_samples(filtered_vcf_file)

@@ -255,6 +255,8 @@ def get_most_likely_haplotype(
     sorted_depth_haplotypes = sorted(haplotype_dict.keys(), key=lambda k: tree.get(k).depth, reverse=True)
     covered_nodes = set()
     best_score = ("NA", "NA", "NA", "NA", "NA", "NA", "NA")
+    # Fallback: track best candidate where QC2+QC3 pass but QC1 may fail
+    fallback_score = None
 
     for haplotype_name in sorted_depth_haplotypes:
         node = tree.get(haplotype_name)
@@ -286,38 +288,41 @@ def get_most_likely_haplotype(
 
         qc1_score = get_qc1_score(path, haplotype_dict)
 
-        # if any of the scores are below treshold, the total can not be above so ignore
-        if qc1_score < treshold:
-            continue
-
         if haplotype_dict[node.name].nr_total == 0:
             qc2_score = 0
         else:
             qc2_score = haplotype_dict[node.name].nr_derived / haplotype_dict[node.name].nr_total
-            if qc2_score < treshold:
-                continue
+
         if qc3_score[1] == 0:
             qc3_score = 0
         else:
             qc3_score = qc3_score[0] / qc3_score[1]
-            if qc3_score < treshold:
-                continue
 
         total_score = product([qc1_score, qc2_score, qc3_score])
 
-        # if above filter we found the hit
-        if total_score > treshold:
+        # Primary path: all scores pass threshold → accept immediately
+        if qc1_score >= treshold and qc2_score >= treshold and qc3_score >= treshold and total_score > treshold:
             ancestral_children = get_ancestral_children(node, haplotype_dict, tree)
             best_score = (node.name, ancestral_children, qc1_score, qc2_score, qc3_score, total_score, node.depth)
             break
-            
-        # else, no hit is found, but still report Quality Scores
-        else:
-            best_score = ("NA", "NA", qc1_score, qc2_score, qc3_score, total_score, "NA")
-            
+
+        # Fallback path: QC2 and QC3 are strong — candidate is likely correct
+        # but QC1 failed due to backbone noise (false positives in rare markers).
+        # Track the best such candidate (deepest node with strong QC2+QC3).
+        if fallback_score is None and qc2_score >= treshold and (qc3_score >= treshold or qc3_score == 0):
+            # Require at least 2 derived markers to avoid noise
+            if haplotype_dict[node.name].nr_derived >= 2:
+                ancestral_children = get_ancestral_children(node, haplotype_dict, tree)
+                fallback_score = (node.name, ancestral_children, qc1_score, qc2_score, qc3_score, total_score, node.depth)
+
         # make sure that less specific nodes are not recorded
         for node_name in path:
             covered_nodes.add(node_name)
+
+    # Use fallback if primary path found nothing
+    if best_score[0] == "NA" and fallback_score is not None:
+        best_score = fallback_score
+
     return best_score
 
 
