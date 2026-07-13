@@ -8,7 +8,7 @@
  * 
  * Usage:
  *   node prepare_ftdna_data.js --ftdna /path/to/get.json --yfull /path/to/ytree.json
- *   node prepare_ftdna_data.js   (reads paths from deepen_config.json)
+ *   node prepare_ftdna_data.js   (reads paths from deepen_config.local.json)
  * 
  * Source data:
  *   FTDNA: curl -o get.json "https://www.familytreedna.com/public/y-dna-haplotree/get"
@@ -22,6 +22,22 @@
 const fs = require('fs');
 const path = require('path');
 
+function loadConfig() {
+    const loadFile = (filename) => {
+        const configPath = path.join(__dirname, filename);
+        return fs.existsSync(configPath)
+            ? JSON.parse(fs.readFileSync(configPath, 'utf8'))
+            : {};
+    };
+    const base = loadFile('deepen_config.json');
+    const local = loadFile('deepen_config.local.json');
+    return {
+        ...base,
+        ...local,
+        ftdna_data: {...base.ftdna_data, ...local.ftdna_data}
+    };
+}
+
 // --- Parse arguments ---
 function getSourcePaths() {
     const args = process.argv.slice(2);
@@ -32,19 +48,16 @@ function getSourcePaths() {
         if (args[i] === '--yfull' && args[i+1]) yfull = args[++i];
     }
     
-    // Fallback to config
+    // Fallback to portable config, overlaid by ignored local settings.
     if (!ftdna || !yfull) {
-        const configPath = path.join(__dirname, 'deepen_config.json');
-        if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            if (!ftdna && config.ftdna_data && config.ftdna_data.get_json) ftdna = config.ftdna_data.get_json;
-            if (!yfull && config.ftdna_data && config.ftdna_data.ytree_json) yfull = config.ftdna_data.ytree_json;
-        }
+        const config = loadConfig();
+        if (!ftdna && config.ftdna_data && config.ftdna_data.get_json) ftdna = config.ftdna_data.get_json;
+        if (!yfull && config.ftdna_data && config.ftdna_data.ytree_json) yfull = config.ftdna_data.ytree_json;
     }
     
     if (!ftdna || !yfull) {
         console.error(`Usage: node prepare_ftdna_data.js --ftdna /path/to/get.json --yfull /path/to/ytree.json`);
-        console.error(`\nOr set paths in deepen_config.json under ftdna_data.get_json and ftdna_data.ytree_json`);
+        console.error(`\nOr set paths in deepen_config.local.json under ftdna_data.get_json and ftdna_data.ytree_json`);
         console.error(`\nTo download source data:`);
         console.error(`  FTDNA: curl -o get.json "https://www.familytreedna.com/public/y-dna-haplotree/get"`);
         console.error(`  YFull: available from FTDNA Haplo Server or YFull website`);

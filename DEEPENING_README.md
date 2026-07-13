@@ -30,7 +30,7 @@ gunzip hg38.fa.gz
 samtools faidx hg38.fa
 ```
 
-Set the path in `deepen_config.json`:
+Create the ignored local override `deepen_config.local.json` and set the path there:
 ```json
 {
   "reference_genome": {
@@ -128,25 +128,18 @@ Sample, Yleaf_Original, Deepened_FTDNA, Deepened_YFull, Depth_Gain, Chain, FTDNA
 
 ## Configuration
 
-Edit `deepen_config.json`:
+`deepen_config.json` is tracked and contains portable defaults. Put machine-specific paths in the ignored `deepen_config.local.json`; its fields override the tracked configuration:
 
 ```json
 {
   "reference_genome": {
     "hg38": "/path/to/hg38.fa",
-    "hg19": null,
-    "t2t": "/path/to/chm13v2.0.fa",
-    "download_urls": {
-      "hg38": "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz",
-      "hg19": "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/hg19.fa.gz",
-      "t2t": "https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz"
-    }
+    "t2t": "/path/to/chm13v2.0.fa"
   },
   "ftdna_data": {
-    "ftdna_tree": "yleaf/data/ftdna_tree.json",
-    "yfull_snp_index": "yleaf/data/yfull_snp_index.json"
-  },
-  "output_dir": "../reports"
+    "get_json": "/path/to/get.json",
+    "ytree_json": "/path/to/ytree.json"
+  }
 }
 ```
 
@@ -176,7 +169,8 @@ Edit `deepen_config.json`:
 |------|-------------|
 | `deepen_with_ftdna.js` | Core deepening engine |
 | `deepen.sh` | End-to-end wrapper (Yleaf → deepen → report) |
-| `deepen_config.json` | Configuration (reference paths, output settings) |
+| `deepen_config.json` | Tracked portable defaults |
+| `deepen_config.local.json` | Ignored local paths overriding the defaults |
 | `prepare_ftdna_data.js` | Data preparation from FTDNA/YFull APIs |
 
 ## Credits

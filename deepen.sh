@@ -18,8 +18,8 @@ DEEPEN_JS="$SCRIPT_DIR/deepen_with_ftdna.js"
 RESULTS_DIR="$YLEAF_DIR/results"
 REPORTS_DIR="$YLEAF_DIR/reports"
 
-# Load ref from config
-REF=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$SCRIPT_DIR/deepen_config.json','utf8'));console.log(c.reference_genome.hg38||'')}catch(e){}" 2>/dev/null)
+# Load reference from the portable config, overlaid by an ignored local config.
+REF=$(node -e "try { const fs=require('fs'), p='$SCRIPT_DIR', read=f=>fs.existsSync(f)?JSON.parse(fs.readFileSync(f,'utf8')):{}; const base=read(p+'/deepen_config.json'), local=read(p+'/deepen_config.local.json'); console.log(({...base.reference_genome,...local.reference_genome}).hg38||''); } catch {}" 2>/dev/null)
 
 # Create directories
 mkdir -p "$RESULTS_DIR" "$REPORTS_DIR"
@@ -85,7 +85,16 @@ if [ -z "$PRED_FILE" ]; then
     mkdir -p "$OUTPUT_DIR"
     export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
     cd "$YLEAF_DIR"
-    python3 "$YLEAF_PY" -bam "$INPUT" -o "$OUTPUT_DIR" 2>&1 | tail -3
+    INPUT_EXT=$(echo "$INPUT" | tr '[:upper:]' '[:lower:]')
+    if echo "$INPUT_EXT" | grep -qE '\.(vcf|vcf\.gz)$'; then
+        python3 "$YLEAF_PY" -vcf "$INPUT" -o "$OUTPUT_DIR" -rg hg38 2>&1 | tail -3
+    elif echo "$INPUT_EXT" | grep -qE '\.(bam)$'; then
+        python3 "$YLEAF_PY" -bam "$INPUT" -o "$OUTPUT_DIR" -rg hg38 2>&1 | tail -3
+    elif echo "$INPUT_EXT" | grep -qE '\.(cram)$'; then
+        python3 "$YLEAF_PY" -cram "$INPUT" -cr "$REF" -o "$OUTPUT_DIR" -rg hg38 2>&1 | tail -3
+    else
+        python3 "$YLEAF_PY" -bam "$INPUT" -o "$OUTPUT_DIR" -rg hg38 2>&1 | tail -3
+    fi
     PRED_FILE="$OUTPUT_DIR/hg_prediction.hg"
     [ ! -f "$PRED_FILE" ] && { echo "ERROR: Yleaf failed"; exit 1; }
 else

@@ -242,7 +242,7 @@ function deepen(data, startHg, variants, verbose) {
     const nid = findNode(data, startHg);
     if (!nid) {
         if (verbose) console.error(`  ${startHg}: not found in FTDNA tree`);
-        return { original: startHg, deepened: null, yfull: null, deepPath: [], fullPath: [], depthGain: 0 };
+        return { original: startHg, deepened: null, yfull: null, deepPath: [], fullPath: [], yfullPath: [], depthGain: 0 };
     }
 
     let cur = nid;
@@ -292,9 +292,20 @@ function deepen(data, startHg, variants, verbose) {
 
 // --- Load config ---
 function loadConfig() {
-    const configPath = path.join(__dirname, 'deepen_config.json');
-    if (fs.existsSync(configPath)) return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    return {};
+    const loadFile = (filename) => {
+        const configPath = path.join(__dirname, filename);
+        return fs.existsSync(configPath)
+            ? JSON.parse(fs.readFileSync(configPath, 'utf8'))
+            : {};
+    };
+    const base = loadFile('deepen_config.json');
+    const local = loadFile('deepen_config.local.json');
+    return {
+        ...base,
+        ...local,
+        reference_genome: {...base.reference_genome, ...local.reference_genome},
+        ftdna_data: {...base.ftdna_data, ...local.ftdna_data}
+    };
 }
 
 // --- Report: TXT ---
@@ -401,7 +412,7 @@ function main() {
 
     const variants = extractChrYVariants(args.input, inputType, args.ref, data, args.verbose);
     const outDir = args.output || path.resolve(__dirname, config.output_dir || '../reports');
-    const sample = path.basename(args.input).replace(/\.(DeepVariant_v1\.6\.vcf\.gz|vcf\.gz|vcf|bam|cram)$/i, '');
+    const sample = path.basename(args.input).split('.')[0];
 
     if (args.hg) {
         const r = deepen(data, args.hg, variants, args.verbose);
@@ -433,7 +444,7 @@ function main() {
             const hg = (fields[1] || '').split('*')[0].trim();
             if (!hg || hg === 'NA' || hg.startsWith('Low_Y_Signal')) continue;
             const r = deepen(data, hg, variants, args.verbose);
-            const sn = fields[0] || `sample_${i}`;
+            const sn = (fields[0] || `sample_${i}`).split('.')[0];
             fs.appendFileSync(csvFile, (i === 1 ? CSV_HEADER + '\n' : '') + toCSV(r, sn) + '\n');
             if (r.depthGain > 0) {
                 saveReports(r, sn, outDir);

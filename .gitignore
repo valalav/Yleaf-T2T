@@ -32,3 +32,14 @@ wgs_full_run.log
 yleaf/data/ftdna_tree.json
 yleaf/data/yfull_snp_index.json
 reports/
+
+# Local machine configuration and generated deepening artifacts
+/config.txt
+/deepen_config.local.json
+/summary_table_rebuilt.csv
+/temp_update/
+/vcf_chrY/
+*.bak
+*.bak_*
+/yleaf/data/hg38/new_positions_enriched.txt
+/yleaf/data/hg_prediction_tables/tree_enriched.json

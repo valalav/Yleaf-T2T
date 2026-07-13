@@ -1,5 +1,5 @@
 # Yleaf Pipeline — GEMINI.md
-> Last Updated: 2026-03-22
+> Last Updated: 2026-03-28
 
 ## Обзор
 
@@ -22,6 +22,8 @@ Yleaf — инструмент предсказания Y-хромосомных
 
 ### ⚠️ Деревья YFull и FTDNA НЕ совпадают по топологии
 
+Из-за слияния деревьев образуется **орграф с "ромбами"** (множественные предки для одной ветки). Это критически влияет на DFS-обходы (см. раздел "Критические OOM баги").
+
 ### Файлы данных Yleaf
 
 | Файл | Назначение | Размер |
@@ -33,12 +35,22 @@ Yleaf — инструмент предсказания Y-хромосомных
 
 ## Запуск
 
+### 🏃 Быстрый Батч VCF (Рекомендуется)
+```bash
+nohup bash ./run_optimized_batch.sh > /tmp/optimize_vcf.log 2>&1 &
+```
+*Скрипт автоматически (1) нарезает `chrY` из тяжелых VCF, (2) запускает Yleaf, (3) углубляет через `deepen_with_ftdna.js`, (4) сохраняет чистые отчеты в `reports/deepening_results.csv`.*
+
+### Одиночный Запуск
 ```bash
 # BAM (рекомендуется — все позиции)
 python3 -m yleaf.Yleaf -bam /path/to/sample.bam -o /tmp/output -rg hg38
 
 # VCF (только варианты — меньше маркеров!)
 python3 -m yleaf.Yleaf -vcf /path/to/sample.vcf.gz -o /tmp/output -rg hg38
+
+# VCF с отключенным QC-порогом (для образцов с малым числом маркеров)
+python3 -m yleaf.Yleaf -vcf /path/to/sample.vcf.gz -o /tmp/output -rg hg38 -pq 0.0
 ```
 
 > **ПРАВИЛО: НИКОГДА не сравнивать BAM и VCF прогоны!**
@@ -46,72 +58,52 @@ python3 -m yleaf.Yleaf -vcf /path/to/sample.vcf.gz -o /tmp/output -rg hg38
 
 ---
 
-## ✅ YFull Deepener — Post-processing углубление (2026-03-22)
+## ⚡ Оптимизация обработки Big Data графов (FTDNA+YFull) — 2026-03-28
 
-### Архитектура
+После интеграции огромного гибридного дерева (192,000 узлов) `Yleaf` начал зависать (100% CPU) и уходить в Out Of Memory (OOM, до 15+ ГБ RAM). Были выявлены и жестко пропатчены архитектурные недочеты старого кода, в результате время предикта упало с **бесконечности до 0.29 секунд**.
 
-`yleaf/yfull_deepener.py` — post-processing модуль, углубляющий Yleaf предсказания
-через YFull дерево + прямую проверку SNP в BAM (samtools mpileup).
-
-```
-Yleaf prediction → Deepener → Check SNPs in BAM → Deeper haplogroup
-```
-
-### Принцип работы
-
-1. Получает Yleaf prediction (напр. `G-Y4464`)
-2. Находит **все** ветки-потомки в YFull дереве (без лимита depth)
-3. Для каждой ветки ищет адреса SNP из **3 источников** (по приоритету):
-   - YFull CSV (`yfull_snp_p1-p658.csv`, confirmed=Yes) — ~515K SNP
-   - Yleaf positions (`new_positions.txt`) — fallback, ~852K SNP
-   - *(planned)* YBrowse CSV (`snps_hg38.csv`) — ~3.1M SNP
-4. Проверяет позиции в BAM через `samtools mpileup`
-5. Определяет derived/ancestral статус каждой ветки
-6. **Итеративно** повторяет от найденной deeper ветки до терминальной
-7. Transitive deepening: если потомок derived → все предки тоже derived
-
-### Запуск
-
-```bash
-python3 yleaf/yfull_deepener.py \
-  --prediction "G-Y4464" \
-  --bam /path/to/sample.bam \
-  --yfull-tree temp_update/current_tree.json \
-  --csv /path/to/yfull_snp_p1-p658.csv \
-  --positions yleaf/data/hg38/new_positions.txt
-```
-
-### Батч-результаты (76 образцов, 2026-03-22)
-
-| Метрика | Значение |
-|---------|----------|
-| Углублено | **43/76 (56%)** |
-| Без deeper | 33 |
-
-### Известные ограничения
-
-1. **T2T-only SNP**: ветки с SNP из T2T reference (CHM13) не имеют hg38 координат →
-   невозможно проверить в hg38 BAM. Пример: R-Y518906 (4 SNP, все без hg38 addr)
-2. **Гетерозиготные SNP**: смесь der/anc reads — считаются по большинству (>50%)
-3. **Покрытие**: позиции с depth < min_depth (default=3) пропускаются
+### Решенные Критические OOM-баги
+1. **Комбинаторный DFS-взрыв:** Из-за "ромбовидных" классификаций FTDNA функция `get_ancestral_children()` (рекурсивный спуск) уходила в бесконечное размножение путей. Внедрен `visited = {node.name}`, полностью срезавший экспоненциальную нагрузку.
+2. **Сломаный Cache отсечения:** В `predict_haplogroup.py` проверка `if node in covered_nodes:` сравнивала объекты `Node` со строками, давая всегда `False`. Заменено на `node.name`. Алгоритм перестал обходить проверенные ветви (O(N*Depth) -> O(Depth)).
 
 ---
 
-## ✅ YFull CSV SNP интеграция (2026-03-20/21)
+## 🐛 Исправления QC-алгоритма прогноза — 2026-03-28 (v2)
 
-- `yleaf/yfull_integrator.py` — фильтрация + интеграция YFull CSV SNP
-- +82,030 маркеров (852K → 934K), +120 нод дерева
-- BAM→BAM прогон: 3/4 образцов SAME, 1 CHANGED (не из-за YFull)
+### Проблема: Образцы с малым числом маркеров ложно бракуются
 
-```bash
-python3 -m yleaf.yfull_integrator \
-    ~/wgs/yfull/data/yfull_snp_p1-p658.csv \
-    --positions yleaf/data/hg38/new_positions.txt \
-    --tree yleaf/data/hg_prediction_tables/tree.json \
-    --yfull-tree ~/wgs/yfull/data/current_tree.json
-```
+При обработке 20 WGS-образцов от ПГ обнаружилось, что **валидные мужские образцы** (например, `300006000540` = R-M12149, `300006000700` = R-FT219632) получали статус `Low_Y_Signal` или `NA` вместо настоящей гаплогруппы.
 
-> **YFull интеграция БЕЗОПАСНА.** +65K проверяемых маркеров, не ломает предсказания.
+**Корневая причина — две ошибки в `predict_haplogroup.py`:**
+
+### Фикс 1: Грубый порог Low_Y_Signal (строка ~418)
+
+**Было:** `if total_derived < 100:` → жестко бракует любой образец с менее 100 derived маркерами.
+**Проблема:** Образец 540 имел всего 20 derived маркеров, но все 20 чисто и уверенно трассировали линию `R-Z2103 → R-M12149 → R-Y13369 → R-L584 → R-Y19434`. Алгоритм **уже нашёл** верную гаплогруппу, но порог **перезаписал** результат.
+**Стало:** `Low_Y_Signal` применяется **только** когда:
+- Алгоритм тоже не нашёл гаплогруппу (`hg == "NA"`)
+- Derived маркеров менее 5 (истинно пустые / женские образцы)
+
+### Фикс 2: QC1=0 убивает валидный fallback (строка ~312)
+
+**Было:** QC1 (backbone score) = 0 при отсутствии промежуточных маркеров (CT, CF, GHIJK...) → `total_score = QC1 × QC2 × QC3 = 0` → прогноз отбрасывался. Fallback требовал `nr_derived >= 2`, и `covered_nodes` блокировал проверку предков.
+**Проблема:** У образца 540 в VCF просто не было позиций для backbone-маркеров. QC2=1.0, QC3=1.0, но QC1=0 из-за **отсутствия данных**, а не противоречий. Fallback на R-Y19434 (1 derived) не срабатывал → все предки (R-M12149 с 6 derived!) блокировались `covered_nodes`.
+**Стало:**
+- При подтверждённом пути (QC3 > 0), fallback принимает ноды с 1 derived маркером
+- При QC1=0 эффективный score считается как `QC2 × QC3` (не умножается на ноль)
+
+### Верификация фиксов
+
+| Образец | До фикса | После фикса | Реальная гаплогруппа |
+|---------|----------|-------------|---------------------|
+| 300006000540 | Low_Y_Signal (20 SNPs) | **R-Y19434** (score 1.0) | R-M12149 (YFull) ✅ |
+| 300006000700 | R1a (score 0.0) | **R-FT219632** (score 0.33) | R-FT219632 ✅ |
+| 300006000620 | — | **G-Y32599** (score 0.8) | ✅ |
+
+---
+
+## Косметика Отчетов
+Имена сэмплов в `deepening_results.csv` (ранее `3000...MGI.cutadapt...`) теперь очищаются до 12-значного ID с помощью `.split('.')[0]` прямо в пайплайне `deepen_with_ftdna.js`.
 
 ---
 
@@ -119,29 +111,15 @@ python3 -m yleaf.yfull_integrator \
 
 | Файл | Изменение |
 |------|-----------|
-| `yleaf/predict_haplogroup.py` | Soft-fallback QC: если QC1 low, но QC2+QC3 ok → accept |
+| `yleaf/predict_haplogroup.py` | Фикс OOM багов DFS/Cache; Умный `Low_Y_Signal` (вместо грубого <100); QC1=0 fallback для sparse VCF |
 | `yleaf/Yleaf.py` | VCF index skip: 21с → 6.6с/образец |
+| `run_optimized_batch.sh` | **NEW**: Комплексный конвейер извлечения chrY и вызова deepen.sh |
+| `deepen_with_ftdna.js` | **NEW**: Быстрое FTDNA in-memory углубление; Короткие ID в CSV |
 | `yleaf/tree.py` | Итеративный DFS вместо рекурсии |
 | `yleaf/updater.py` | Dual mapping: YFull primary + YBrowse fallback |
 | `enrich_with_paths.py` | Post-processing: dual-tree paths через haplo server (порт 9003) |
-| `yleaf/yfull_deepener.py` | **NEW**: YFull deepening через BAM |
-| `yleaf/yfull_integrator.py` | **NEW**: YFull CSV SNP интеграция |
-
----
-
-## Батч-результаты (852K, 2026-03-19)
-
-| Метрика | Значение |
-|---------|----------|
-| Образцов | 76 |
-| Определены | 66 (86.8%) |
-| Low_Y_Signal | 10 |
-| Среднее время | 6.6с |
-| Распределение | G=33, J=17, R=9, E=2, I=2, C=2, Q=1 |
-
-### Данные
-- **BAM:** `/mnt/truenas-data/.../BAM/{SAMPLE}/{SAMPLE}.MGI.cutadapt.bwa.MarkDuplicates.bam`
-- **VCF:** `/mnt/truenas-data/.../VCF/{SAMPLE}/{SAMPLE}.MGI.cutadapt.bwa.MarkDuplicates.DeepVariant.vcf.gz`
+| `yleaf/yfull_deepener.py` | Углубление через BAM |
+| `yleaf/yfull_integrator.py` | YFull CSV SNP интеграция |
 
 ### Бэкапы
 - `new_positions.txt.bak_before_yfull` — позиции до интеграции
