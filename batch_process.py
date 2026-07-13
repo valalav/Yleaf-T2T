@@ -18,8 +18,24 @@ def detect_reference_path(bam_path):
     Returns Path object or None.
     """
     try:
-        # Use external_tools to get header lines safely
-        header_lines = external_tools.samtools_view_header(bam_path)
+        # For CRAM, set all possible reference paths in env to prevent samtools
+        # from trying to download references from the internet (which causes hangs)
+        env = os.environ.copy()
+        if str(bam_path).endswith('.cram'):
+            # Set REF_PATH to include all possible reference locations
+            ref_dirs = [
+                "/home/valalav/wgs/WGSExtractv4/reference/genomes",
+            ]
+            env['REF_PATH'] = ':'.join(ref_dirs)
+
+        # Use samtools directly with timeout to prevent hangs
+        result = subprocess.run(
+            ["samtools", "view", "-H", str(bam_path)],
+            capture_output=True, text=True, timeout=30, env=env
+        )
+        if result.returncode != 0:
+            return None
+        header_lines = result.stdout.split('\n')
         
         LEN_HG19 = 249250621
         LEN_HG38 = 248956422
@@ -154,20 +170,32 @@ def run_yleaf(bam_path, output_base_dir, read_thresh=None, quality_thresh=None):
     bam_path = Path(bam_path)
     # Ensure base output directory exists
     Path(output_base_dir).mkdir(parents=True, exist_ok=True)
-    
+
     output_dir = Path(output_base_dir) / f"output_{bam_path.stem}"
-    
     # Write log outside the target dir to prevent deletion by Yleaf
     log_file_path = output_dir.with_suffix('.console.log')
     
     print(f"--- Processing {bam_path.name} ---")
-    
+    # Don't create output_dir here, let Yleaf do it.
+
     # Determine path to Yleaf.py relative to this script
     script_dir = Path(__file__).resolve().parent
     yleaf_script = script_dir / "yleaf" / "Yleaf.py"
-    
-    cmd = [sys.executable, str(yleaf_script), "-bam", str(bam_path), "-o", str(output_dir)]
-    
+
+    # Determine input type and build command accordingly
+    is_cram = bam_path.suffix.lower() == '.cram'
+    if is_cram:
+        cmd = [sys.executable, str(yleaf_script), "-cram", str(bam_path), "-o", str(output_dir)]
+        # CRAM requires reference - detect from header
+        ref_path = detect_reference_path(bam_path)
+        if ref_path and Path(ref_path).exists():
+            cmd.extend(["-cr", str(ref_path)])
+            print(f"  [CRAM] Using reference: {Path(ref_path).name}")
+        else:
+            print("  [CRAM] Warning: Could not detect reference. Processing may fail.")
+    else:
+        cmd = [sys.executable, str(yleaf_script), "-bam", str(bam_path), "-o", str(output_dir)]
+
     # Add optional arguments
     if read_thresh is not None:
         cmd.extend(["-r", str(read_thresh)])
